@@ -1,14 +1,17 @@
-import { EndType, FillRule, JoinType, inflatePathsD, intersectD } from "clipper2-ts";
+import { EndType, FillRule, JoinType, areaD, differenceD, inflatePathsD, intersectD, unionD } from "clipper2-ts";
 import { svgPathProperties } from "svg-path-properties";
 
 export const SNAP_LOCK_TEMPLATE_ID = "snap-lock-carton" as const;
 export type BoxTemplateId = typeof SNAP_LOCK_TEMPLATE_ID;
-export type PanelId = "left" | "back" | "right" | "front" | "top";
+export type PanelId = "left" | "back" | "right" | "front" | "top" | (string & {});
 export type PointMm = { x: number; y: number };
 export type BoxDimensions = { widthMm: number; depthMm: number; heightMm: number; glueFlapMm: number };
-export type PanelGeometry = { id: PanelId; label: string; x: number; y: number; width: number; height: number };
+export type PanelGeometry = { id: PanelId; label: string; x: number; y: number; width: number; height: number;
+  path?: string; holes?: string[]; printable?: boolean };
 export type CreaseSegment = { id: string; type: "crease"; x1: number; y1: number; x2: number; y2: number };
-export type CutContour = { id: "outer" | "back-hole"; type: "cut"; path: string };
+export type CutContour = { id: string; type: "cut"; path: string; closed?: boolean };
+export type HingeGeometry = { id: string; parentId: string; childId: string; x1: number; y1: number; x2: number; y2: number;
+  angleDeg: number; direction: "mountain" | "valley"; start: number; end: number; layer: number };
 export type FlapGeometry = {
   id: string;
   parent: PanelId | "glue";
@@ -17,17 +20,20 @@ export type FlapGeometry = {
 };
 export type BoundsMm = { x: number; y: number; width: number; height: number };
 export type BoxGeometry = {
-  templateId: BoxTemplateId;
+  templateId: BoxTemplateId | "custom";
   dimensions: BoxDimensions;
   panels: PanelGeometry[];
   flaps: FlapGeometry[];
   cut: CutContour[];
   creases: CreaseSegment[];
-  outerFaces: readonly ["front", "back", "left", "right", "top", "bottom"];
+  outerFaces: readonly string[];
   bounds: BoundsMm;
   viewBox: string;
   perimeter: string;
   backHole: string;
+  holes?: string[];
+  rootPanelId?: string;
+  hinges?: HingeGeometry[];
   bodyTop: number;
   bodyBottom: number;
 };
@@ -77,8 +83,10 @@ export function generateSnapLockGeometry(d: BoxDimensions): BoxGeometry {
   const dust = D * 31 / 90;
   const tuck = D * 34 / 90;
   const bottom = D * 47 / 90;
+  const sideBottom = W * 47 / 90;
   const r = (x: number, a: number, width: number) => x + width * a / 90;
   const y = (a: number) => y1 + D * a / 90;
+  const sideY = (a: number) => y1 + W * a / 90;
 
   const panels: PanelGeometry[] = [
     { id: "left", label: "左侧", x: x0, y: y0, width: D, height: H },
@@ -92,10 +100,10 @@ export function generateSnapLockGeometry(d: BoxDimensions): BoxGeometry {
   // calibrate the unlabelled flap contours without scaling the full net.
   const outer = [
     `M${at(x0)} ${at(y0)} L${at(G * 7 / 15)} ${at(y0 + .5 * G / 15)} Q${at(G * 3 / 15)} ${at(y0 + G / 15)} 0 ${at(y0 + 4 * G / 15)} L0 ${at(y1 - 8 * G / 15)} Q${at(4 * G / 15)} ${at(y1)} ${at(x0)} ${at(y1)}`,
-    `L${at(x0)} ${at(y(45))} Q${at(x0)} ${at(y(47))} ${at(r(x0, 2, D))} ${at(y(47))} H${at(r(x0, 20, D))} Q${at(r(x0, 21, D))} ${at(y(47))} ${at(r(x0, 21, D))} ${at(y(45))} V${at(y(31))} H${at(r(x0, 69, D))} V${at(y(45))} Q${at(r(x0, 69, D))} ${at(y(47))} ${at(r(x0, 71, D))} ${at(y(47))} H${at(r(x0, 88, D))} Q${at(x1)} ${at(y(47))} ${at(x1)} ${at(y(45))} V${at(y1)}`,
-    `L${at(r(x1, 33, W))} ${at(y(33))} V${at(y(45))} Q${at(r(x1, 33, W))} ${at(y(47))} ${at(r(x1, 35, W))} ${at(y(47))} H${at(r(x1, 88, W))} Q${at(x2)} ${at(y(47))} ${at(x2)} ${at(y(45))} V${at(y1)}`,
-    `L${at(r(x2, 23, D))} ${at(y(33))} V${at(y(45))} Q${at(r(x2, 23, D))} ${at(y(47))} ${at(r(x2, 25, D))} ${at(y(47))} H${at(r(x2, 68, D))} Q${at(r(x2, 70, D))} ${at(y(47))} ${at(r(x2, 70, D))} ${at(y(45))} V${at(y(33))} L${at(x3)} ${at(y1)}`,
-    `L${at(r(x3, 33, W))} ${at(y(33))} V${at(y(45))} Q${at(r(x3, 33, W))} ${at(y(47))} ${at(r(x3, 35, W))} ${at(y(47))} H${at(r(x3, 78, W))} Q${at(r(x3, 80, W))} ${at(y(47))} ${at(r(x3, 80, W))} ${at(y(45))} L${at(x4)} ${at(y1)}`,
+    `L${at(x0)} ${at(sideY(45))} Q${at(x0)} ${at(sideY(47))} ${at(r(x0, 2, D))} ${at(sideY(47))} H${at(r(x0, 20, D))} Q${at(r(x0, 21, D))} ${at(sideY(47))} ${at(r(x0, 21, D))} ${at(sideY(45))} V${at(sideY(31))} H${at(r(x0, 69, D))} V${at(sideY(45))} Q${at(r(x0, 69, D))} ${at(sideY(47))} ${at(r(x0, 71, D))} ${at(sideY(47))} H${at(r(x0, 88, D))} Q${at(x1)} ${at(sideY(47))} ${at(x1)} ${at(sideY(45))} V${at(y1)}`,
+    `L${at(r(x1, 31, W))} ${at(y(32))} V${at(y(45))} Q${at(r(x1, 31, W))} ${at(y(47))} ${at(r(x1, 33, W))} ${at(y(47))} H${at(r(x1, 88, W))} Q${at(x2)} ${at(y(47))} ${at(x2)} ${at(y(45))} V${at(y1)}`,
+    `L${at(r(x2, 23, D))} ${at(sideY(33))} V${at(sideY(45))} Q${at(r(x2, 23, D))} ${at(sideY(47))} ${at(r(x2, 25, D))} ${at(sideY(47))} H${at(r(x2, 68, D))} Q${at(r(x2, 70, D))} ${at(sideY(47))} ${at(r(x2, 70, D))} ${at(sideY(45))} V${at(sideY(33))} L${at(x3)} ${at(y1)}`,
+    `L${at(r(x3, 33, W))} ${at(y(33))} V${at(y(45))} Q${at(r(x3, 33, W))} ${at(y(47))} ${at(r(x3, 35, W))} ${at(y(47))} H${at(r(x3, 88, W))} Q${at(x4)} ${at(y(47))} ${at(x4)} ${at(y(45))} V${at(y1)}`,
     `L${at(x4)} ${at(y0)} L${at(x4)} ${at(topY + 5 * D / 90)} Q${at(x4)} ${at(topY + D / 90)} ${at(r(x3, 87, W))} ${at(topY)} L${at(r(x3, 88, W))} ${at(topY - 3 * D / 90)} V${at(topY - 21 * D / 90)} Q${at(r(x3, 88, W))} ${at(topY - tuck)} ${at(r(x3, 75, W))} ${at(topY - tuck)} H${at(r(x3, 56, W))} V${at(topY - 33 * D / 90)} A${at(W * 11 / 90)} ${at(W * 11 / 90)} 0 0 1 ${at(r(x3, 34, W))} ${at(topY - 33 * D / 90)} V${at(topY - tuck)} H${at(r(x3, 15, W))} Q${at(r(x3, 2, W))} ${at(topY - tuck)} ${at(r(x3, 2, W))} ${at(topY - 21 * D / 90)} V${at(topY - 3 * D / 90)} L${at(x3)} ${at(topY)} L${at(x3)} ${at(y0)}`,
     `L${at(x3 - D * 15 / 90)} ${at(y0 - dust)} H${at(x2 + D * 15 / 90)} L${at(x2)} ${at(y0)} L${at(x2)} ${at(y0 - D * 110 / 90)} H${at(x1)} V${at(y0)} L${at(x1 - D * 15 / 90)} ${at(y0 - dust)} H${at(x0 + D * 15 / 90)} L${at(x0)} ${at(y0)} Z`,
   ].join(" ");
@@ -117,6 +125,7 @@ export function generateSnapLockGeometry(d: BoxDimensions): BoxGeometry {
   ];
   const fx = (width: number, v: number) => at(width * v / 90);
   const fy = (v: number) => at(D * v / 90);
+  const sideFy = (v: number) => at(W * v / 90);
   const flaps: FlapGeometry[] = [
     { id: "glue", parent: "glue", x: 0, y: y0, width: G, depth: H,
       path: `M${at(G)} 0 L${at(7 * G / 15)} ${at(.5 * G / 15)} Q${at(3 * G / 15)} ${at(G / 15)} 0 ${at(4 * G / 15)} V${at(H - 8 * G / 15)} Q${at(4 * G / 15)} ${at(H)} ${at(G)} ${at(H)} Z` },
@@ -125,17 +134,17 @@ export function generateSnapLockGeometry(d: BoxDimensions): BoxGeometry {
     { id: "dust-right", parent: "right", x: x2, y: y0 - dust, width: D, depth: dust, path: `M0 ${at(dust)} L${at(D / 6)} 0 H${at(D * 5 / 6)} L${at(D)} ${at(dust)} Z` },
     { id: "tuck", parent: "top", x: x3, y: topY - tuck, width: W, depth: tuck,
       path: `M0 ${fy(34)} L${fx(W, 2)} ${fy(31)} V${fy(13)} Q${fx(W, 2)} 0 ${fx(W, 15)} 0 H${fx(W, 34)} V${fy(1)} A${fx(W, 11)} ${fy(11)} 0 0 0 ${fx(W, 56)} ${fy(1)} V0 H${fx(W, 75)} Q${fx(W, 88)} 0 ${fx(W, 88)} ${fy(13)} V${fy(31)} L${at(W)} ${fy(34)} Z` },
-    { id: "bottom-left", parent: "left", x: x0, y: y1, width: D, depth: bottom,
-      path: `M0 0 H${at(D)} V${fy(45)} Q${at(D)} ${fy(47)} ${fx(D, 88)} ${fy(47)} H${fx(D, 71)} Q${fx(D, 69)} ${fy(47)} ${fx(D, 69)} ${fy(45)} V${fy(31)} H${fx(D, 21)} V${fy(45)} Q${fx(D, 21)} ${fy(47)} ${fx(D, 19)} ${fy(47)} H${fx(D, 2)} Q0 ${fy(47)} 0 ${fy(45)} Z` },
+    { id: "bottom-left", parent: "left", x: x0, y: y1, width: D, depth: sideBottom,
+      path: `M0 0 H${at(D)} V${sideFy(45)} Q${at(D)} ${sideFy(47)} ${fx(D, 88)} ${sideFy(47)} H${fx(D, 71)} Q${fx(D, 69)} ${sideFy(47)} ${fx(D, 69)} ${sideFy(45)} V${sideFy(31)} H${fx(D, 21)} V${sideFy(45)} Q${fx(D, 21)} ${sideFy(47)} ${fx(D, 19)} ${sideFy(47)} H${fx(D, 2)} Q0 ${sideFy(47)} 0 ${sideFy(45)} Z` },
     { id: "bottom-back", parent: "back", x: x1, y: y1, width: W, depth: bottom,
-      path: `M0 0 H${at(W)} L${fx(W, 88)} ${fy(47)} H${fx(W, 35)} Q${fx(W, 33)} ${fy(47)} ${fx(W, 33)} ${fy(45)} V${fy(32)} Z` },
-    { id: "bottom-right", parent: "right", x: x2, y: y1, width: D, depth: bottom,
-      path: `M0 0 H${at(D)} L${fx(D, 68)} ${fy(32)} V${fy(45)} Q${fx(D, 68)} ${fy(47)} ${fx(D, 66)} ${fy(47)} H${fx(D, 24)} Q${fx(D, 22)} ${fy(47)} ${fx(D, 22)} ${fy(45)} V${fy(32)} Z` },
+      path: `M0 0 H${at(W)} L${fx(W, 88)} ${fy(47)} H${fx(W, 33)} Q${fx(W, 31)} ${fy(47)} ${fx(W, 31)} ${fy(45)} V${fy(32)} Z` },
+    { id: "bottom-right", parent: "right", x: x2, y: y1, width: D, depth: sideBottom,
+      path: `M0 0 H${at(D)} L${fx(D, 68)} ${sideFy(32)} V${sideFy(45)} Q${fx(D, 68)} ${sideFy(47)} ${fx(D, 66)} ${sideFy(47)} H${fx(D, 24)} Q${fx(D, 22)} ${sideFy(47)} ${fx(D, 22)} ${sideFy(45)} V${sideFy(32)} Z` },
     { id: "bottom-front", parent: "front", x: x3, y: y1, width: W, depth: bottom,
-      path: `M0 0 H${at(W)} L${fx(W, 82)} ${fy(47)} H${fx(W, 34)} Q${fx(W, 32)} ${fy(47)} ${fx(W, 32)} ${fy(45)} V${fy(32)} Z` },
+      path: `M0 0 H${at(W)} V${fy(45)} Q${at(W)} ${fy(47)} ${fx(W, 88)} ${fy(47)} H${fx(W, 34)} Q${fx(W, 32)} ${fy(47)} ${fx(W, 32)} ${fy(45)} V${fy(32)} Z` },
   ];
   const minY = topY - tuck;
-  const bounds = { x: 0, y: round(minY), width: round(x4), height: round(y1 + bottom - minY) };
+  const bounds = { x: 0, y: round(minY), width: round(x4), height: round(y1 + Math.max(bottom, sideBottom) - minY) };
   return {
     templateId: SNAP_LOCK_TEMPLATE_ID, dimensions: { ...d }, panels, flaps,
     cut: [{ id: "outer", type: "cut", path: outer }, { id: "back-hole", type: "cut", path: backHole }],
@@ -185,11 +194,13 @@ function offsetContour(points: PointMm[], distanceMm: number): PointMm[] {
 }
 
 export function guideContours(geometry: BoxGeometry, distanceMm: number, kind: "bleed" | "safe") {
-  if (distanceMm <= 0) return { outer: sampleContour(geometry.perimeter), hole: sampleContour(geometry.backHole) };
+  const sourceHoles = geometry.holes ?? (geometry.backHole ? [geometry.backHole] : []);
+  if (distanceMm <= 0) return { outer: sampleContour(geometry.perimeter),
+    hole: sourceHoles[0] ? sampleContour(sourceHoles[0]) : [], holes: sourceHoles.map((path) => sampleContour(path)) };
   const outer = sampleContour(geometry.perimeter);
-  const hole = sampleContour(geometry.backHole);
   const sign = kind === "bleed" ? 1 : -1;
-  return { outer: offsetContour(outer, sign * distanceMm), hole: offsetContour(hole, -sign * distanceMm) };
+  const holes = sourceHoles.map((path) => offsetContour(sampleContour(path), -sign * distanceMm));
+  return { outer: offsetContour(outer, sign * distanceMm), hole: holes[0] ?? [], holes };
 }
 
 export function contourBounds(points: PointMm[]): BoundsMm {
@@ -201,6 +212,23 @@ export function contourBounds(points: PointMm[]): BoundsMm {
 export function polygonIntersectsPolygon(a: PointMm[], b: PointMm[]): boolean {
   if (a.length < 3 || b.length < 3) return false;
   return intersectD([a], [b], FillRule.NonZero).some((path) => path.length >= 3);
+}
+
+export function closedBottomGapArea(geometry: BoxGeometry): number {
+  if (geometry.templateId !== SNAP_LOCK_TEMPLATE_ID) return 0;
+  const W = geometry.dimensions.widthMm, D = geometry.dimensions.depthMm;
+  const shapes = (["bottom-front", "bottom-back", "bottom-left", "bottom-right"] as const).map((id) => {
+    const flap = geometry.flaps.find((item) => item.id === id);
+    if (!flap) return [];
+    return sampleContour(flap.path, .25).map((point) => id === "bottom-front"
+      ? { x: point.x, y: D - point.y } : id === "bottom-back"
+        ? { x: W - point.x, y: point.y } : id === "bottom-left"
+          ? { x: W - point.y, y: D - point.x } : { x: point.y, y: point.x });
+  }).filter((points) => points.length >= 3);
+  const footprint = unionD(shapes, FillRule.NonZero);
+  const uncovered = differenceD([[{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: D }, { x: 0, y: D }]],
+    footprint, FillRule.NonZero, 4);
+  return uncovered.reduce((total, path) => total + Math.abs(areaD(path)), 0);
 }
 
 export function geometryIntegrityIssues(geometry: BoxGeometry): string[] {

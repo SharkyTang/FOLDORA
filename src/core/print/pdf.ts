@@ -1,7 +1,8 @@
 import { PDFDocument, rgb } from "pdf-lib";
-import { generateGeometry, guideContours, sampleContour, contourBounds, type BoundsMm, type PointMm } from "../box/geometry";
+import { guideContours, sampleContour, contourBounds, type BoundsMm, type PointMm } from "../box/geometry";
+import { geometryForProject } from "../box/resolve";
 import { ensureFontLoaded } from "../fonts/loader";
-import { EDITABLE_FACES, mmToPixels, mmToPt, type EditableFaceId, type Project } from "../project/types";
+import { projectFaceIds, mmToPixels, mmToPt, type EditableFaceId, type Project } from "../project/types";
 import { runPreflight } from "./preflight";
 
 export type ExportSettings = {
@@ -18,13 +19,13 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
 
 type FaceRenderer = (face: EditableFaceId, dpi: 150 | 300) => Promise<HTMLCanvasElement>;
 
-const toSvgPath = (points: PointMm[]) => points.length
-  ? `M ${points.map((p) => `${p.x.toFixed(3)} ${p.y.toFixed(3)}`).join(" L ")} Z` : "";
+const toSvgPath = (points: PointMm[], closed = true) => points.length
+  ? `M ${points.map((p) => `${p.x.toFixed(3)} ${p.y.toFixed(3)}`).join(" L ")}${closed ? " Z" : ""}` : "";
 
 function drawContour(page: ReturnType<PDFDocument["addPage"]>, points: PointMm[], bounds: BoundsMm,
-  color: ReturnType<typeof rgb>, widthPt: number, dash?: number[]) {
+  color: ReturnType<typeof rgb>, widthPt: number, dash?: number[], closed = true) {
   if (!points.length) return;
-  page.drawSvgPath(toSvgPath(points), {
+  page.drawSvgPath(toSvgPath(points, closed), {
     x: -mmToPt(bounds.x), y: mmToPt(bounds.height + bounds.y), scale: mmToPt(1),
     borderColor: color, borderWidth: widthPt, borderDashArray: dash,
   });
@@ -42,7 +43,7 @@ export async function buildProofPdf(project: Project, settings: ExportSettings,
   if (settings.format !== "pdf" || ![150, 300].includes(settings.dpi)) throw new Error("PDF 导出设置无效。 ");
   const errors = runPreflight(project, availableAssetIds).filter((issue) => issue.level === "error");
   if (errors.length) throw new Error(`PDF 导出已阻止：${errors[0].message}`);
-  const geometry = generateGeometry(project.templateId, project.dimensions);
+  const geometry = geometryForProject(project);
   const bleed = settings.includeBleed ? guideContours(geometry, project.print.bleedMm, "bleed") : null;
   const contentBounds = bleed ? contourBounds(bleed.outer) : geometry.bounds;
   const marginMm = 2;
@@ -55,7 +56,7 @@ export async function buildProofPdf(project: Project, settings: ExportSettings,
     Math.ceil(mmToPixels(panel.height, settings.dpi)), 0);
   if (totalPixels > 80_000_000) throw new Error("刀板超过 8000 万像素预算，请使用 150 DPI 草稿导出。 ");
 
-  const fontJobs = EDITABLE_FACES.flatMap((face) => project.faces[face]
+  const fontJobs = projectFaceIds(project).flatMap((face) => (project.faces[face] ?? [])
     .filter((item) => item.type === "text" && item.visible)
     .map((item) => item.type === "text" ? ensureFontLoaded(item.fontId, item.text, item.fontWeight, item.fontStyle === "italic") : Promise.resolve()));
   await Promise.all(fontJobs);
@@ -63,7 +64,7 @@ export async function buildProofPdf(project: Project, settings: ExportSettings,
 
   const pdf = await PDFDocument.create();
   pdf.setTitle("FOLDORA RGB 校样刀板");
-  pdf.setSubject(`${project.dimensions.widthMm}×${project.dimensions.depthMm}×${project.dimensions.heightMm} mm · ${settings.dpi} DPI RGB proof`);
+  pdf.setSubject(`${project.name} · ${settings.dpi} DPI RGB proof`);
   const page = pdf.addPage([pageWidth, pageHeight]);
   page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: rgb(1, 1, 1) });
   for (const panel of geometry.panels) {
@@ -75,11 +76,14 @@ export async function buildProofPdf(project: Project, settings: ExportSettings,
   }
   if (bleed) {
     drawContour(page, bleed.outer, bounds, rgb(.79, .29, .20), .45, [2, 2]);
-    drawContour(page, bleed.hole, bounds, rgb(.79, .29, .20), .45, [2, 2]);
+    for (const hole of bleed.holes) drawContour(page, hole, bounds, rgb(.79, .29, .20), .45, [2, 2]);
   }
   if (settings.includeCut) {
     drawContour(page, sampleContour(geometry.perimeter, .5), bounds, rgb(.02, .55, .32), .6);
-    drawContour(page, sampleContour(geometry.backHole, .25), bounds, rgb(.02, .55, .32), .6);
+    for (const hole of geometry.holes ?? (geometry.backHole ? [geometry.backHole] : []))
+      drawContour(page, sampleContour(hole, .25), bounds, rgb(.02, .55, .32), .6);
+    for (const cut of geometry.cut.filter((item) => item.closed === false))
+      drawContour(page, sampleContour(cut.path, .5), bounds, rgb(.02, .55, .32), .6, undefined, false);
   }
   if (settings.includeCrease) {
     for (const crease of geometry.creases) page.drawLine({

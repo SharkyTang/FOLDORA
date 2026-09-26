@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { validateDimensions, type BoxDimensions } from "../box/geometry";
+import { customNetFromTemplate, deriveCustomNet, emptyCustomNet, type CustomNet } from "../box/custom";
 import { emptyProject, faceSize, type AssetMeta, type DesignObject, type EditableFaceId, type Project, type TextObject } from "./types";
 
 type ObjectPatch = Partial<DesignObject>;
@@ -14,6 +15,11 @@ type Store = {
   loadProject: (project: Project) => void;
   setFace: (face: EditableFaceId) => void;
   updateDimensions: (dimensions: BoxDimensions) => void;
+  updateCustomNet: (net: CustomNet) => void;
+  updateCustomNetWithTransfers: (net: CustomNet, transfers: Record<string, string>) => void;
+  renameProject: (name: string) => void;
+  startBlankCustom: () => void;
+  copyAsCustom: () => void;
   updatePrint: (patch: Partial<Project["print"]>) => void;
   selectObject: (id: string | null) => void;
   addText: () => void;
@@ -38,11 +44,31 @@ export const useProjectStore = create<Store>((set) => ({
   loadProject: (project) => set({ project, selectedObjectId: null, past: [], future: [], gestureStart: null }),
   setFace: (face) => set((state) => ({ project: { ...state.project, selectedFace: face }, selectedObjectId: null })),
   updateDimensions: (dimensions) => set((state) => {
+    if (state.project.mode !== "template") throw new Error("自绘刀板请直接编辑线段尺寸。");
     const errors = validateDimensions(dimensions);
     if (errors.length) throw new Error(errors.join(" "));
     if (JSON.stringify(dimensions) === JSON.stringify(state.project.dimensions)) return state;
     return { project: { ...state.project, dimensions: { ...dimensions } },
       past: remember(state.past, state.project), future: [], selectedObjectId: null };
+  }),
+  updateCustomNet: (net) => set((state) => applyCustomNet(state, net)),
+  updateCustomNetWithTransfers: (net, transfers) => set((state) => applyCustomNet(state, net, transfers)),
+  renameProject: (name) => set((state) => ({ project: { ...state.project, name: name.trim().slice(0, 80) || "未命名包装设计" } })),
+  startBlankCustom: () => set(() => {
+    const project = emptyProject();
+    project.mode = "custom"; project.customNet = emptyCustomNet(); project.faces = {}; project.selectedFace = "";
+    project.name = "新建自绘刀板";
+    return { project, selectedObjectId: null, past: [], future: [], gestureStart: null };
+  }),
+  copyAsCustom: () => set((state) => {
+    const project = copy(state.project);
+    project.id = crypto.randomUUID(); project.name = `${project.name} · 自绘副本`;
+    project.mode = "custom";
+    project.customNet = state.project.mode === "custom" && state.project.customNet
+      ? structuredClone(state.project.customNet) : customNetFromTemplate(project.dimensions);
+    for (const region of deriveCustomNet(project.customNet).regions) if (region.printable && region.confirmed)
+      project.faces[region.id] ??= [];
+    return { project, selectedObjectId: null, past: [], future: [], gestureStart: null };
   }),
   updatePrint: (patch) => set((state) => {
     const next = { ...state.project.print, ...patch };
@@ -65,7 +91,7 @@ export const useProjectStore = create<Store>((set) => ({
       letterSpacingMm: 0, lineHeight: 1.2,
     };
     const project = copy(state.project);
-    project.faces[faceId].push(object);
+    (project.faces[faceId] ??= []).push(object);
     return { project, selectedObjectId: id, past: remember(state.past, state.project), future: [] };
   }),
   addAssetObject: (asset, width, height) => set((state) => {
@@ -76,14 +102,14 @@ export const useProjectStore = create<Store>((set) => ({
     const id = crypto.randomUUID();
     const project = copy(state.project);
     project.assets[asset.id] = asset;
-    project.faces[faceId].push({ id, type: "asset", faceId, name: asset.name, assetId: asset.id,
+    (project.faces[faceId] ??= []).push({ id, type: "asset", faceId, name: asset.name, assetId: asset.id,
       x: (size.width - objectWidth) / 2, y: (size.height - objectHeight) / 2,
       width: objectWidth, height: objectHeight, rotation: 0, opacity: 1, visible: true, locked: false });
     return { project, selectedObjectId: id, past: remember(state.past, state.project), future: [] };
   }),
   patchObject: (id, patch, keepHistory = true) => set((state) => {
     const faceId = state.project.selectedFace;
-    const index = state.project.faces[faceId].findIndex((object) => object.id === id);
+    const index = (state.project.faces[faceId] ?? []).findIndex((object) => object.id === id);
     if (index < 0) return state;
     const project = copy(state.project);
     project.faces[faceId][index] = { ...project.faces[faceId][index], ...patch } as DesignObject;
@@ -92,14 +118,14 @@ export const useProjectStore = create<Store>((set) => ({
   }),
   removeObject: (id) => set((state) => {
     const faceId = state.project.selectedFace;
-    if (!state.project.faces[faceId].some((object) => object.id === id)) return state;
+    if (!(state.project.faces[faceId] ?? []).some((object) => object.id === id)) return state;
     const project = copy(state.project);
     project.faces[faceId] = project.faces[faceId].filter((object) => object.id !== id);
     return { project, selectedObjectId: null, past: remember(state.past, state.project), future: [] };
   }),
   reorderObject: (id, direction) => set((state) => {
     const faceId = state.project.selectedFace;
-    const items = state.project.faces[faceId];
+    const items = state.project.faces[faceId] ?? [];
     const from = items.findIndex((object) => object.id === id);
     if (from < 0) return state;
     const to = direction === "top" ? items.length - 1 : direction === "bottom" ? 0 : from + (direction === "up" ? 1 : -1);
@@ -125,5 +151,34 @@ export const useProjectStore = create<Store>((set) => ({
     const project = state.future[0];
     return { project, past: remember(state.past, state.project), future: state.future.slice(1), selectedObjectId: null, gestureStart: null };
   }),
-  clear: () => set((state) => ({ project: emptyProject(), selectedObjectId: null, past: remember(state.past, state.project), future: [] })),
+  clear: () => set((state) => {
+    const project = emptyProject();
+    project.id = state.project.id; project.name = state.project.name;
+    if (state.project.mode === "custom") { project.mode = "custom"; project.customNet = emptyCustomNet(); project.faces = {}; project.selectedFace = ""; }
+    return { project, selectedObjectId: null, past: remember(state.past, state.project), future: [] };
+  }),
 }));
+
+function applyCustomNet(state: Store, net: CustomNet, transfers: Record<string, string> = {}): Partial<Store> {
+  if (state.project.mode !== "custom" || !state.project.customNet) return state;
+  const old = deriveCustomNet(state.project.customNet).regions;
+  const nextRegions = deriveCustomNet(net).regions;
+  const ids = nextRegions.filter((region) => region.printable && region.confirmed).map((region) => region.id);
+  const project = copy(state.project);
+  project.customNet = structuredClone(net);
+  for (const id of ids) project.faces[id] ??= [];
+  for (const [from, target] of Object.entries(transfers)) {
+    if (!ids.includes(target)) throw new Error(`面板 ${from} 的目标无效。`);
+    const before = old.find((region) => region.id === from);
+    const after = nextRegions.find((region) => region.id === target);
+    if (!before || !after) throw new Error(`面板 ${from} 的映射无效。`);
+    project.faces[target].push(...(project.faces[from] ?? []).map((object) => ({ ...object, faceId: target,
+      x: before.x + object.x - after.x, y: before.y + object.y - after.y })));
+    delete project.faces[from];
+  }
+  for (const [id, objects] of Object.entries(project.faces)) {
+    if (objects.length && !ids.includes(id)) throw new Error(`面板 ${id} 包含图案，请先确认新的归属。`);
+  }
+  if (!ids.includes(project.selectedFace)) project.selectedFace = ids[0] ?? "";
+  return { project, past: remember(state.past, state.project), future: [], selectedObjectId: null };
+}

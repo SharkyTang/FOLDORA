@@ -38,7 +38,7 @@ test("v0.1 fixed box design, layers, 3D, restore and export", async ({ page }, t
     context.fillStyle = "white"; context.font = "bold 30px Arial"; context.fillText("L", 14, 34);
     return canvas.toDataURL("image/png").split(",")[1];
   });
-  await page.locator('input[type="file"]').setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: Buffer.from(logoBase64, "base64") });
+  await page.locator('input[type="file"][aria-label="上传图片"]').setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: Buffer.from(logoBase64, "base64") });
   await expect(page.locator(".layer-row")).toHaveCount(2);
   await expect(page.locator(".layer-row").first()).toContainText("logo.png");
   await expect(page.locator(".net-overview image")).toHaveCount(5);
@@ -86,14 +86,16 @@ test("v0.1 fixed box design, layers, 3D, restore and export", async ({ page }, t
   await expect(page.getByRole("spinbutton", { name: "旋转 · °" })).toHaveValue("-15");
 
   const pngPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出 PNG" }).click();
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "当前面 PNG" }).click();
   const png = await pngPromise;
   expect(png.suggestedFilename()).toMatch(/front.*\.png$/);
   const pngBytes = readFileSync(await png.path());
   expect(pngBytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
   expect(pngBytes.readUInt32BE(16)).toBe(1200);
   const jpgPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "JPG", exact: true }).click();
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "当前面 JPG" }).click();
   const jpg = await jpgPromise;
   expect(jpg.suggestedFilename()).toMatch(/front.*\.jpg$/);
   const jpgBytes = readFileSync(await jpg.path());

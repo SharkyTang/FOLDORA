@@ -3,11 +3,11 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
 import type Konva from "konva";
 import { useProjectStore } from "@/core/project/store";
-import { EDITABLE_FACES, faceSize, mmToPixels, type EditableFaceId } from "@/core/project/types";
+import { projectFaceIds, faceSize, mmToPixels, type EditableFaceId } from "@/core/project/types";
 import { FaceStage } from "./FaceStage";
 
-export type SurfaceMap = Partial<Record<EditableFaceId, HTMLCanvasElement>>;
-export type PreviewMap = Partial<Record<EditableFaceId, string>>;
+export type SurfaceMap = Partial<Record<string, HTMLCanvasElement>>;
+export type PreviewMap = Partial<Record<string, string>>;
 export type SurfaceHandle = {
   exportFace: (face: EditableFaceId, format: "png" | "jpeg") => string;
   renderPrintFace: (face: EditableFaceId, dpi: 150 | 300) => Promise<HTMLCanvasElement>;
@@ -23,12 +23,12 @@ const SURFACE_SCALE = 4;
 
 export const TextureSurfaces = forwardRef<SurfaceHandle, Props>(function TextureSurfaces({ assetUrls, onSurfaces, onAssetError }, forwardedRef) {
   const project = useProjectStore((state) => state.project);
-  const refs = useRef<Record<EditableFaceId, React.RefObject<Konva.Stage | null>>>(
-    Object.fromEntries(EDITABLE_FACES.map((face) => [face, { current: null }])) as Record<EditableFaceId, React.RefObject<Konva.Stage | null>>,
-  );
+  const refs = useRef<Record<string, React.RefObject<Konva.Stage | null>>>({});
+  const faceIds = projectFaceIds(project);
+  const refFor = (face: string) => refs.current[face] ??= { current: null };
   const frame = useRef<number | null>(null);
   const force = useRef(true);
-  const signatures = useRef<Partial<Record<EditableFaceId, string>>>({});
+  const signatures = useRef<Partial<Record<string, string>>>({});
   const canvases = useRef<SurfaceMap>({});
   const previews = useRef<PreviewMap>({});
 
@@ -41,8 +41,8 @@ export const TextureSurfaces = forwardRef<SurfaceHandle, Props>(function Texture
       let changed = false;
       const nextCanvases = { ...canvases.current };
       const nextPreviews = { ...previews.current };
-      for (const face of EDITABLE_FACES) {
-        const stage = refs.current[face].current;
+      for (const face of projectFaceIds(latest)) {
+        const stage = refs.current[face]?.current;
         if (!stage) continue;
         const signature = JSON.stringify([latest.faces[face], faceSize(face, latest)]);
         if (!force.current && signatures.current[face] === signature) continue;
@@ -66,7 +66,7 @@ export const TextureSurfaces = forwardRef<SurfaceHandle, Props>(function Texture
   useEffect(() => () => { if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null; } }, []);
   useImperativeHandle(forwardedRef, () => ({
     exportFace(face, format) {
-      const stage = refs.current[face].current;
+      const stage = refs.current[face]?.current;
       if (!stage) throw new Error("画布仍在加载，请稍后重试。");
       const targetWidth = 1200;
       const { width } = faceSize(face, useProjectStore.getState().project);
@@ -78,9 +78,9 @@ export const TextureSurfaces = forwardRef<SurfaceHandle, Props>(function Texture
     },
     async renderPrintFace(face, dpi) {
       const project = useProjectStore.getState().project;
-      const stage = refs.current[face].current;
+      const stage = refs.current[face]?.current;
       if (!stage) throw new Error("印刷画布仍在加载，请稍后重试。");
-      const expected = project.faces[face].filter((item) => item.type === "asset" && item.visible).map((item) => item.id);
+      const expected = (project.faces[face] ?? []).filter((item) => item.type === "asset" && item.visible).map((item) => item.id);
       const deadline = Date.now() + 12000;
       while (!expected.every((id) => stage.find("Image").some((node) => node.id() === id))) {
         if (Date.now() > deadline) throw new Error(`${face} 的图片仍未加载，请检查素材。`);
@@ -95,7 +95,7 @@ export const TextureSurfaces = forwardRef<SurfaceHandle, Props>(function Texture
   }), []);
 
   return <div className="offscreen-surfaces" aria-hidden="true">
-    {EDITABLE_FACES.map((face) => <FaceStage key={face} faceId={face} pixelsPerMm={SURFACE_SCALE}
-      assetUrls={assetUrls} stageRef={refs.current[face]} onAssetReady={onReady} onFontReady={onReady} onAssetError={onAssetError} />)}
+    {faceIds.map((face) => <FaceStage key={face} faceId={face} pixelsPerMm={SURFACE_SCALE}
+      assetUrls={assetUrls} stageRef={refFor(face)} onAssetReady={onReady} onFontReady={onReady} onAssetError={onAssetError} />)}
   </div>;
 });

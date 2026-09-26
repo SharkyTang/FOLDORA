@@ -1,10 +1,11 @@
 import { DEFAULT_DIMENSIONS, SNAP_LOCK_TEMPLATE_ID, type BoxDimensions } from "../box/geometry";
+import { deriveCustomNet, type CustomNet } from "../box/custom";
 
 export const EDITABLE_FACES = ["front", "back", "left", "right", "top"] as const;
-export type EditableFaceId = (typeof EDITABLE_FACES)[number];
-export type FaceId = EditableFaceId | "bottom";
+export type EditableFaceId = string;
+export type FaceId = string;
 
-export const FACE_LABELS: Record<FaceId, string> = {
+export const FACE_LABELS: Record<string, string> = {
   front: "正面", back: "背面", left: "左侧", right: "右侧", top: "顶面", bottom: "底面",
 };
 
@@ -49,13 +50,28 @@ export type AssetMeta = {
   naturalHeight: number;
 };
 
-export type Project = {
+export type ProjectV3 = {
   version: 3;
   templateId: typeof SNAP_LOCK_TEMPLATE_ID;
   dimensions: BoxDimensions;
   print: { bleedMm: number; safeAreaMm: number };
   selectedFace: EditableFaceId;
   faces: Record<FaceId, DesignObject[]>;
+  assets: Record<string, AssetMeta>;
+};
+
+export type Project = {
+  version: 4;
+  id: string;
+  name: string;
+  mode: "template" | "custom";
+  templateRevision: 2;
+  templateId: typeof SNAP_LOCK_TEMPLATE_ID;
+  dimensions: BoxDimensions;
+  customNet?: CustomNet;
+  print: { bleedMm: number; safeAreaMm: number };
+  selectedFace: EditableFaceId;
+  faces: Record<string, DesignObject[]>;
   assets: Record<string, AssetMeta>;
 };
 
@@ -81,7 +97,11 @@ export const BUILTIN_ASSETS: Record<string, AssetMeta> = {
 
 export function emptyProject(): Project {
   return {
-    version: 3,
+    version: 4,
+    id: crypto.randomUUID(),
+    name: "未命名包装设计",
+    mode: "template",
+    templateRevision: 2,
     templateId: SNAP_LOCK_TEMPLATE_ID,
     dimensions: { ...DEFAULT_DIMENSIONS },
     print: { bleedMm: 3, safeAreaMm: 3 },
@@ -91,7 +111,23 @@ export function emptyProject(): Project {
   };
 }
 
-export function faceSize(face: FaceId, project?: Pick<Project, "dimensions">): { width: number; height: number } {
+export function projectFaceIds(project: Project): EditableFaceId[] {
+  return project.mode === "custom" && project.customNet
+    ? deriveCustomNet(project.customNet).regions.filter((region) => region.printable && region.confirmed).map((region) => region.id)
+    : [...EDITABLE_FACES];
+}
+
+export function faceLabel(project: Project, face: FaceId): string {
+  if (project.mode === "custom" && project.customNet)
+    return deriveCustomNet(project.customNet).regions.find((region) => region.id === face)?.label ?? face;
+  return FACE_LABELS[face] ?? face;
+}
+
+export function faceSize(face: FaceId, project?: Pick<Project, "dimensions" | "mode" | "customNet"> | Pick<ProjectV3, "dimensions">): { width: number; height: number } {
+  if (project && "mode" in project && project.mode === "custom" && project.customNet) {
+    const region = deriveCustomNet(project.customNet).regions.find((item) => item.id === face);
+    if (region) return { width: region.width, height: region.height };
+  }
   const dimensions = project?.dimensions ?? DEFAULT_DIMENSIONS;
   if (face === "top" || face === "bottom") return { width: dimensions.widthMm, height: dimensions.depthMm };
   return { width: face === "front" || face === "back" ? dimensions.widthMm : dimensions.depthMm,

@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Image as KonvaImage, Layer, Rect, Stage, Text, Transformer } from "react-konva";
+import { Group, Image as KonvaImage, Layer, Rect, Stage, Text, Transformer } from "react-konva";
 import type Konva from "konva";
 import { ensureFontLoaded } from "@/core/fonts/loader";
+import { deriveCustomNet } from "@/core/box/custom";
+import { sampleContour, type PointMm } from "@/core/box/geometry";
 import { canvasFontFamily, getFont } from "@/core/fonts/registry";
 import { useProjectStore } from "@/core/project/store";
 import { faceSize, ptToMm, type AssetObject, type DesignObject, type EditableFaceId } from "@/core/project/types";
+
+const EMPTY_OBJECTS: DesignObject[] = [];
 
 type Props = {
   faceId: EditableFaceId;
@@ -116,11 +120,29 @@ export function FaceStage({ faceId, pixelsPerMm: k, assetUrls, stageRef, interac
   const internalRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const ref = stageRef ?? internalRef;
-  const objects = useProjectStore((state) => state.project.faces[faceId]);
+  const objects = useProjectStore((state) => state.project.faces[faceId] ?? EMPTY_OBJECTS);
   const project = useProjectStore((state) => state.project);
   const selectedId = useProjectStore((state) => state.selectedObjectId);
   const selectObject = useProjectStore((state) => state.selectObject);
   const { width, height } = faceSize(faceId, project);
+  const region = project.mode === "custom" && project.customNet
+    ? deriveCustomNet(project.customNet).regions.find((item) => item.id === faceId) : null;
+  const clipFunc = region ? (context: Konva.Context) => {
+    const draw = (points: PointMm[]) => {
+      if (!points.length) return;
+      context.moveTo((points[0].x - region.x) * k, (points[0].y - region.y) * k);
+      points.slice(1).forEach((point) => context.lineTo((point.x - region.x) * k, (point.y - region.y) * k));
+      context.closePath();
+    };
+    context.beginPath(); draw(region.points);
+    const signed = (points: PointMm[]) => points.reduce((sum, point, index) => {
+      const next = points[(index + 1) % points.length]; return sum + point.x * next.y - next.x * point.y;
+    }, 0);
+    for (const hole of region.holes) {
+      const points = sampleContour(hole, .5);
+      draw(signed(points) * signed(region.points) > 0 ? [...points].reverse() : points);
+    }
+  } : undefined;
   useEffect(() => {
     if (!interactive || !transformerRef.current || !ref.current) return;
     const node = selectedId ? ref.current.findOne(`#${selectedId}`) : null;
@@ -131,11 +153,13 @@ export function FaceStage({ faceId, pixelsPerMm: k, assetUrls, stageRef, interac
     onMouseDown={(event) => { if (interactive && (event.target === event.target.getStage() || event.target.name() === "paper")) selectObject(null); }}
     onTouchStart={(event) => { if (interactive && (event.target === event.target.getStage() || event.target.name() === "paper")) selectObject(null); }}>
     <Layer listening={interactive}>
-      <Rect name="paper" x={0} y={0} width={width * k} height={height * k} fill="#fffdf8" />
-      {objects.map((object) => <ArtworkObject key={object.id} object={object} pixelsPerMm={k}
-        src={object.type === "asset" ? assetUrls[(object as AssetObject).assetId] : undefined}
-        interactive={interactive} selected={interactive && selectedId === object.id}
-        onAssetReady={onAssetReady} onAssetError={onAssetError} onFontReady={onFontReady} />)}
+      <Group clipFunc={clipFunc}>
+        <Rect name="paper" x={0} y={0} width={width * k} height={height * k} fill="#fffdf8" />
+        {objects.map((object) => <ArtworkObject key={object.id} object={object} pixelsPerMm={k}
+          src={object.type === "asset" ? assetUrls[(object as AssetObject).assetId] : undefined}
+          interactive={interactive} selected={interactive && selectedId === object.id}
+          onAssetReady={onAssetReady} onAssetError={onAssetError} onFontReady={onFontReady} />)}
+      </Group>
       {interactive && <Transformer ref={transformerRef} rotateEnabled
         flipEnabled={false} borderStroke="#1c8061" anchorStroke="#1c8061" anchorFill="#ffffff"
         anchorSize={9} boundBoxFunc={(oldBox, newBox) => newBox.width < 12 || newBox.height < 10 ? oldBox : newBox} />}

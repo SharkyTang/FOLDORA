@@ -1,25 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { DEFAULT_DIMENSIONS, generateGeometry, guideContours, contourBounds, geometryIntegrityIssues, validateDimensions } from "../src/core/box/geometry.ts";
+import { DEFAULT_DIMENSIONS, generateGeometry, guideContours, contourBounds, closedBottomGapArea, geometryIntegrityIssues, validateDimensions } from "../src/core/box/geometry.ts";
+import { DIECUT } from "../src/core/box/reference.ts";
 import { FONT_REGISTRY } from "../src/core/fonts/registry.ts";
 import { migrateProjectV2, validateProjectV3 } from "../src/core/project/migration.ts";
 import { emptyProject, effectiveDpi, faceSize, mmToPixels, mmToPt, pixelsToMm } from "../src/core/project/types.ts";
 import { runPreflight } from "../src/core/print/preflight.ts";
 
 const GOLDEN = JSON.parse(readFileSync(new URL("./fixtures/v01-geometry.json", import.meta.url), "utf8"));
+const CORRECTED = JSON.parse(readFileSync(new URL("./fixtures/corrected-geometry.json", import.meta.url), "utf8"));
 
-test("the immutable v0.1 geometry remains the golden 90 × 90 × 235 net", () => {
+test("historical v0.1 golden stays frozen while revision 2 fixes the template", () => {
+  assert.equal(DIECUT.perimeter, GOLDEN.perimeter);
+  assert.equal(DIECUT.flapPaths.bottomFront, GOLDEN.flapPaths.bottomFront);
   const generated = generateGeometry("snap-lock-carton", DEFAULT_DIMENSIONS);
-  assert.equal(generated.perimeter, GOLDEN.perimeter);
-  assert.equal(generated.backHole, GOLDEN.backHole);
-  assert.deepEqual(generated.panels, GOLDEN.panels);
-  assert.deepEqual(generated.creases.map(({ id, x1, y1, x2, y2 }) => ({ id, x1, y1, x2, y2 })), GOLDEN.creases);
-  for (const [name, id] of [["glue", "glue"], ["dust", "dust-left"], ["tuck", "tuck"],
-    ["bottomLeft", "bottom-left"], ["bottomBack", "bottom-back"],
-    ["bottomRight", "bottom-right"], ["bottomFront", "bottom-front"]]) {
-    assert.equal(generated.flaps.find((flap) => flap.id === id).path, GOLDEN.flapPaths[name]);
+  assert.equal(generated.perimeter, CORRECTED.perimeter);
+  assert.equal(generated.backHole, CORRECTED.backHole);
+  assert.deepEqual(generated.panels, CORRECTED.panels);
+  assert.deepEqual(generated.creases.map(({ id, x1, y1, x2, y2 }) => ({ id, x1, y1, x2, y2 })), CORRECTED.creases);
+  for (const [name, id] of [["glue", "glue"], ["dust-left", "dust-left"], ["dust-right", "dust-right"],
+    ["back-closure", "back-closure"], ["tuck", "tuck"], ["bottom-left", "bottom-left"],
+    ["bottom-back", "bottom-back"], ["bottom-right", "bottom-right"], ["bottom-front", "bottom-front"]]) {
+    assert.equal(generated.flaps.find((flap) => flap.id === id).path, CORRECTED.flapPaths[name]);
   }
+  assert.ok(generated.perimeter.includes("H373 Q375 402 375 400 V355"));
 });
 
 test("four dimension sets derive independent panel widths, fold lines and bounds", () => {
@@ -38,6 +43,7 @@ test("four dimension sets derive independent panel widths, fold lines and bounds
     assert.deepEqual(faceSize("top", { dimensions: d }), { width: W, height: D });
     assert.ok(g.flaps.every((flap) => flap.path.length > 10));
     assert.deepEqual(geometryIntegrityIssues(g), []);
+    assert.ok(closedBottomGapArea(g) < .02, `${W} × ${D} bottom gap: ${closedBottomGapArea(g)} mm²`);
   }
   assert.ok(validateDimensions({ widthMm: 30, depthMm: 80, heightMm: 200, glueFlapMm: 15 }).length > 0);
   assert.throws(() => generateGeometry("snap-lock-carton", { widthMm: 90, depthMm: 90, heightMm: 235, glueFlapMm: 31 }));

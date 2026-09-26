@@ -1,0 +1,183 @@
+import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from "pdf-lib";
+
+async function netPoint(page: Page, x: number, y: number) {
+  return page.getByRole("img", { name: "自绘刀板画布" }).evaluate((svg, at) => {
+    const point = new DOMPoint(at.x, at.y).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+    return { x: point.x, y: point.y };
+  }, { x, y });
+}
+
+async function exportPdf(page: Page) {
+  const pending = page.waitForEvent("download", { timeout: 30_000 });
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "完整刀板 RGB 校样 PDF" }).click();
+  return pending;
+}
+
+test("template copy supports dieline correction, arbitrary face artwork, fold and PDF", async ({ page }, testInfo) => {
+  await page.goto("/editor");
+  await expect(page.getByText("已保存到本机")).toBeVisible();
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await page.getByRole("menuitem", { name: "复制为自绘刀板" }).click();
+  await page.getByRole("tab", { name: "刀板编辑" }).click();
+  await expect(page.getByText("结构已确认，可以预览 3D")).toBeVisible();
+  const outer = page.getByRole("img", { name: "自绘刀板画布" }).locator("path").first();
+  await expect(outer).toHaveAttribute("d", /H373 Q375 402 375 400 V355/);
+  await page.getByRole("button", { name: "选择", exact: true }).click();
+  const edge = await netPoint(page, 370, 375);
+  await page.mouse.click(edge.x, edge.y);
+  await expect(page.getByRole("button", { name: "删除所选结构" })).toBeVisible();
+  await page.getByRole("img", { name: "自绘刀板画布" }).locator('circle[cx="375"][cy="400"]').click();
+  await page.getByRole("spinbutton", { name: "X · mm" }).fill("376");
+  await page.getByRole("spinbutton", { name: "X · mm" }).blur();
+  await page.getByRole("img", { name: "自绘刀板画布" }).locator('circle[cx="375"][cy="355"]').click();
+  await page.getByRole("spinbutton", { name: "X · mm" }).fill("376");
+  await page.getByRole("spinbutton", { name: "X · mm" }).blur();
+  await expect(outer).toHaveAttribute("d", /376 400 L 376 355/);
+  const crease = await netPoint(page, 330, 355);
+  await page.mouse.click(crease.x, crease.y);
+  await page.getByRole("spinbutton", { name: "X2 · mm" }).fill("376");
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(16);
+  await page.getByRole("button", { name: "↶" }).click();
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(15);
+  await page.getByRole("button", { name: "↷" }).click();
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(16);
+  await page.locator(".dieline-panel-row").filter({ has: page.getByRole("button", { name: "设计此面" }) }).first()
+    .getByRole("button", { name: "设计此面" }).click();
+  await page.getByRole("button", { name: "T 文字" }).click();
+  await expect(page.locator(".layer-row")).toHaveCount(1);
+  await page.getByRole("tab", { name: "3D 预览" }).click();
+  await expect(page.getByTestId("three-viewport").locator("canvas")).toBeVisible();
+  await page.getByRole("button", { name: "展开", exact: true }).click();
+  await expect(page.getByTestId("three-viewport")).toHaveAttribute("data-fold-progress", "0");
+  await page.getByRole("button", { name: "合盒", exact: true }).click();
+  await expect(page.getByTestId("three-viewport")).toHaveAttribute("data-fold-progress", "100");
+  await page.getByTestId("three-viewport").screenshot({ path: testInfo.outputPath("custom-template-closed.png") });
+  await page.getByRole("button", { name: "平移", exact: true }).click();
+  await page.getByRole("slider", { name: "3D 缩放" }).fill("160");
+  await expect(page.locator(".camera-zoom output")).toHaveText("160%");
+  const canvas = page.getByTestId("three-viewport").locator("canvas");
+  const beforePan = await canvas.screenshot();
+  const area = await canvas.boundingBox();
+  expect(area).not.toBeNull();
+  await page.mouse.move(area!.x + area!.width / 2, area!.y + area!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(area!.x + area!.width / 2 + 80, area!.y + area!.height / 2 + 35, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(250);
+  expect(Buffer.compare(beforePan, await canvas.screenshot())).not.toBe(0);
+  await page.mouse.wheel(0, -300);
+  await expect.poll(async () => Number((await page.locator(".camera-zoom output").textContent())?.replace("%", "")))
+    .toBeGreaterThan(160);
+  await page.getByRole("button", { name: "复位" }).click();
+  await expect(page.getByTestId("three-viewport")).toHaveAttribute("data-fold-progress", "100");
+  await expect(page.getByText("已保存到本机")).toBeVisible();
+  await page.reload();
+  await expect(page.locator(".layer-row")).toHaveCount(1);
+  const download = await exportPdf(page);
+  const pdf = await PDFDocument.load(readFileSync(await download.path()));
+  expect(pdf.getPageCount()).toBe(1);
+  expect(pdf.getPage(0).getWidth()).toBeGreaterThan(800);
+});
+
+test("blank net draws, confirms panels, saves, backs up, imports and exports", async ({ page }, testInfo) => {
+  await page.goto("/editor");
+  await expect(page.getByText("已保存到本机")).toBeVisible();
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await page.getByRole("menuitem", { name: "新建空白刀板" }).click();
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await page.getByRole("textbox", { name: "项目名称" }).fill("实验纸盒");
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await page.getByRole("tab", { name: "刀板编辑" }).click();
+  await expect(page.locator(".dieline-issues")).toContainText("外轮廓");
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "完整刀板 RGB 校样 PDF" }).click();
+  await expect(page.locator(".toast[role=alert]")).toContainText("PDF 导出已阻止");
+  await page.getByRole("button", { name: "矩形", exact: true }).click();
+  const a = await netPoint(page, 30, 30), b = await netPoint(page, 230, 130);
+  await page.mouse.move(a.x, a.y); await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 8 }); await page.mouse.up();
+  await expect(page.locator(".dieline-issues")).toContainText("面板 1");
+  await page.getByRole("button", { name: "CREASE 压痕" }).click();
+  const c = await netPoint(page, 130, 30), d = await netPoint(page, 130, 130);
+  await page.mouse.click(c.x, c.y); await page.mouse.click(d.x, d.y);
+  await page.getByRole("button", { name: "识别并确认面板" }).click();
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(2);
+  await expect(page.getByText("结构已确认，可以预览 3D")).toBeVisible();
+  await page.getByRole("button", { name: "CUT 直线" }).click();
+  const slitStart = await netPoint(page, 50, 60), slitEnd = await netPoint(page, 80, 60);
+  await page.mouse.click(slitStart.x, slitStart.y); await page.mouse.click(slitEnd.x, slitEnd.y);
+  await expect(page.locator(".dieline-inspector")).toContainText("开放刀线 1");
+  await expect(page.getByText("结构已确认，可以预览 3D")).toBeVisible();
+  await page.locator(".dieline-panel-row").first().getByRole("button", { name: "设计此面" }).click();
+  await page.getByRole("button", { name: "T 文字" }).click();
+  await page.getByRole("textbox", { name: "文字内容" }).fill("CUSTOM NET");
+  await page.getByRole("tab", { name: "3D 预览" }).click();
+  await expect(page.getByTestId("three-viewport").locator("canvas")).toBeVisible();
+  await page.waitForTimeout(500);
+  await page.getByTestId("three-viewport").screenshot({ path: testInfo.outputPath("custom-blank-folded.png") });
+  await expect(page.getByText("已保存到本机")).toBeVisible();
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  const backup = page.waitForEvent("download");
+  await page.getByRole("menuitem", { name: "下载项目备份" }).click();
+  const bundle = await backup;
+  expect(bundle.suggestedFilename()).toMatch(/\.foldora$/);
+  const bundleData = readFileSync(await bundle.path());
+  await page.locator('input[aria-label="导入 FOLDORA 项目备份"]').setInputFiles({
+    name: "custom.foldora", mimeType: "application/vnd.foldora+json", buffer: bundleData,
+  });
+  await expect(page.getByText(/· 导入/).first()).toBeVisible();
+  const download = await exportPdf(page);
+  const pdf = await PDFDocument.load(readFileSync(await download.path()));
+  expect(pdf.getPageCount()).toBe(1);
+  expect(pdf.getPage(0).getWidth() / 72 * 25.4).toBeGreaterThan(200);
+  const pdfPage = pdf.getPage(0);
+  const images = pdfPage.node.Resources()!.lookup(PDFName.of("XObject"), PDFDict)!;
+  expect(images.keys()).toHaveLength(2);
+  const streams = pdfPage.node.Contents() as PDFArray;
+  const operators = Buffer.from(decodePDFRawStream(pdf.context.lookup(streams.get(0)!) as PDFRawStream).decode()).toString("latin1");
+  expect((operators.match(/\bS\b/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await page.getByRole("menuitem", { name: "删除当前项目" }).click();
+  await expect(page.getByText("实验纸盒 · 导入")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("已保存到本机")).toBeVisible();
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await expect(page.getByRole("menuitem", { name: /实验纸盒 · 导入/ })).toHaveCount(0);
+});
+
+test("merging a decorated panel requires explicit artwork transfer and is undoable", async ({ page }) => {
+  await page.goto("/editor");
+  await expect(page.getByText("已保存到本机")).toBeVisible();
+  await page.getByRole("button", { name: "项目 ▾" }).click();
+  await page.getByRole("menuitem", { name: "新建空白刀板" }).click();
+  await page.getByRole("button", { name: "矩形", exact: true }).click();
+  const a = await netPoint(page, 30, 30), b = await netPoint(page, 230, 130);
+  await page.mouse.move(a.x, a.y); await page.mouse.down(); await page.mouse.move(b.x, b.y); await page.mouse.up();
+  await page.getByRole("button", { name: "CREASE 压痕" }).click();
+  const c = await netPoint(page, 130, 30), d = await netPoint(page, 130, 130);
+  await page.mouse.click(c.x, c.y); await page.mouse.click(d.x, d.y);
+  await page.getByRole("button", { name: "识别并确认面板" }).click();
+  await page.locator(".dieline-panel-row").last().getByRole("button", { name: "设计此面" }).click();
+  await page.getByRole("button", { name: "T 文字" }).click();
+  await page.getByRole("tab", { name: "刀板编辑" }).click();
+  await page.getByRole("button", { name: "选择", exact: true }).click();
+  const crease = await netPoint(page, 130, 80);
+  await page.mouse.click(crease.x, crease.y);
+  await page.getByRole("button", { name: "删除所选结构" }).click();
+  await expect(page.getByRole("dialog", { name: "确认面板图案归属" })).toBeVisible();
+  await page.getByRole("button", { name: "确认并应用" }).click();
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(1);
+  await page.getByRole("button", { name: "识别并确认面板" }).click();
+  await expect(page.getByText("结构已确认，可以预览 3D")).toBeVisible();
+  await expect(page.locator(".layer-row")).toHaveCount(1);
+  await page.getByRole("button", { name: "↶" }).click();
+  await page.getByRole("button", { name: "↶" }).click();
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(2);
+  await page.getByRole("button", { name: "↷" }).click();
+  await page.getByRole("button", { name: "↷" }).click();
+  await expect(page.locator(".dieline-panel-row")).toHaveCount(1);
+});

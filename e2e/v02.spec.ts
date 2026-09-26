@@ -77,7 +77,8 @@ test("v0.2 dimension, guides, folding, fonts, save and full RGB PDF", async ({ p
   await expect(page.locator(".net-overview image")).toHaveCount(5);
 
   const downloadPromise = page.waitForEvent("download", { timeout: 30000 });
-  await page.getByRole("button", { name: "导出刀板 PDF" }).click();
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "完整刀板 RGB 校样 PDF" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/120x80x200.*\.pdf$/);
   const downloadedPath = await download.path();
@@ -115,8 +116,15 @@ test("reference dimensions export an intact net and folded preview", async ({ pa
   await page.getByRole("button", { name: "合盒", exact: true }).click();
   await expect(viewport).toHaveAttribute("data-fold-progress", "100");
   await page.screenshot({ path: testInfo.outputPath("reference-closed.png") });
+  await page.getByRole("button", { name: "顶面", exact: true }).last().click();
+  await page.waitForTimeout(850);
+  await viewport.screenshot({ path: testInfo.outputPath("reference-top.png") });
+  await page.getByRole("button", { name: "底面", exact: true }).last().click();
+  await page.waitForTimeout(850);
+  await viewport.screenshot({ path: testInfo.outputPath("reference-bottom.png") });
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出刀板 PDF" }).click();
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "完整刀板 RGB 校样 PDF" }).click();
   const download = await downloadPromise;
   const path = await download.path();
   copyFileSync(path, testInfo.outputPath("reference-net.pdf"));
@@ -154,11 +162,13 @@ test("v2 project receives an atomic original backup and old font blocks print", 
     const db = await new Promise<IDBDatabase>((resolve) => { request.onsuccess = () => resolve(request.result); });
     const tx = db.transaction("projects", "readonly");
     const get = (key: string) => new Promise<unknown>((resolve) => { const req = tx.objectStore("projects").get(key); req.onsuccess = () => resolve(req.result); });
-    const versions = [await get("original-v2"), await get("current")].map((item) => (item as { version: number }).version);
+    const activeId = await get("active-id") as string;
+    const versions = [await get("original-v2"), await get(`project:${activeId}`)].map((item) => (item as { version: number }).version);
     db.close(); return versions;
   });
-  expect(versions).toEqual([2, 3]);
-  await page.getByRole("button", { name: "导出刀板 PDF" }).click();
+  expect(versions).toEqual([2, 4]);
+  await page.getByRole("button", { name: "导出 ▾" }).click();
+  await page.getByRole("menuitem", { name: "完整刀板 RGB 校样 PDF" }).click();
   await expect(page.locator(".toast[role=alert]")).toContainText("PDF 导出已阻止");
 });
 

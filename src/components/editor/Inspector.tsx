@@ -2,7 +2,7 @@
 
 import { useProjectStore } from "@/core/project/store";
 import { getFont } from "@/core/fonts/registry";
-import { EDITABLE_FACES, FACE_LABELS, objectLabel, type DesignObject } from "@/core/project/types";
+import { faceLabel, projectFaceIds, objectLabel, type DesignObject } from "@/core/project/types";
 import { FontPicker } from "./FontPicker";
 
 function NumericField({ label, value, onChange, min, max, unit }: {
@@ -20,7 +20,7 @@ function NumericField({ label, value, onChange, min, max, unit }: {
 export function Inspector() {
   const face = useProjectStore((state) => state.project.selectedFace);
   const selectedId = useProjectStore((state) => state.selectedObjectId);
-  const object = useProjectStore((state) => state.project.faces[face].find((item) => item.id === selectedId));
+  const object = useProjectStore((state) => (state.project.faces[face] ?? []).find((item) => item.id === selectedId));
   const patch = useProjectStore((state) => state.patchObject);
   return <section className="inspector-section" aria-label="对象属性">
     <div className="panel-title"><span className="eyebrow">PROPERTIES</span><h2>属性</h2></div>
@@ -88,10 +88,10 @@ export function LayersPanel() {
   const reorder = useProjectStore((state) => state.reorderObject);
   const remove = useProjectStore((state) => state.removeObject);
   const face = project.selectedFace;
-  const objects = project.faces[face];
+  const objects = project.faces[face] ?? [];
   return <section className="layers-section" aria-label="图层面板">
     <div className="panel-title"><span className="eyebrow">LAYERS</span><h2>图层</h2><small>{objects.length} 个对象</small></div>
-    <div className="layer-face-heading">{FACE_LABELS[face]} <span>从上到下</span></div>
+    <div className="layer-face-heading">{faceLabel(project, face)} <span>从上到下</span></div>
     <div className="layer-list">{objects.length ? [...objects].reverse().map((object) => <LayerRow key={object.id} object={object} selected={selectedId === object.id} />)
       : <p className="empty-note">当前盒面还没有对象。</p>}</div>
     <div className="layer-actions" role="group" aria-label="调整选中图层顺序">
@@ -101,7 +101,7 @@ export function LayersPanel() {
       <button type="button" title="置底" disabled={!selectedId} onClick={() => selectedId && reorder(selectedId, "bottom")}>置底</button>
     </div>
     <button type="button" className="danger-link" disabled={!selectedId} onClick={() => selectedId && remove(selectedId)}>删除选中图层</button>
-    <div className="other-faces">{EDITABLE_FACES.filter((item) => item !== face).map((item) =>
-      <span key={item}>{FACE_LABELS[item]} <b>{project.faces[item].length}</b></span>)}</div>
+    <div className="other-faces">{projectFaceIds(project).filter((item) => item !== face).map((item) =>
+      <span key={item}>{faceLabel(project, item)} <b>{project.faces[item]?.length ?? 0}</b></span>)}</div>
   </section>;
 }

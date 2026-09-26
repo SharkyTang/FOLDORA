@@ -1,6 +1,8 @@
-import { generateGeometry, geometryIntegrityIssues, validateDimensions } from "../box/geometry";
+import { closedBottomGapArea, geometryIntegrityIssues, validateDimensions } from "../box/geometry";
+import { deriveCustomNet } from "../box/custom";
+import { geometryForProject } from "../box/resolve";
 import { getFont } from "../fonts/registry";
-import { EDITABLE_FACES, FACE_LABELS, effectiveDpi, faceSize, type EditableFaceId, type Project } from "../project/types";
+import { faceLabel, projectFaceIds, effectiveDpi, faceSize, type EditableFaceId, type Project } from "../project/types";
 
 export type PreflightLevel = "error" | "warning" | "strong-warning";
 export type PreflightIssue = {
@@ -21,17 +23,23 @@ function rotatedBounds(x: number, y: number, width: number, height: number, rota
 
 export function runPreflight(project: Project, availableAssetIds?: ReadonlySet<string>): PreflightIssue[] {
   const issues: PreflightIssue[] = [];
-  const dimensionErrors = validateDimensions(project.dimensions);
+  const dimensionErrors = project.mode === "template" ? validateDimensions(project.dimensions) : [];
   if (dimensionErrors.length) {
     issues.push({ code: "INVALID_DIMENSIONS", level: "error", message: dimensionErrors.join(" ") });
     return issues;
   }
   try {
-    const geometry = generateGeometry(project.templateId, project.dimensions);
-    if (!geometry.perimeter || !geometry.backHole || geometry.creases.length < 12)
+    const geometry = geometryForProject(project);
+    if (project.mode === "custom" && project.customNet) {
+      for (const message of deriveCustomNet(project.customNet).issues)
+        issues.push({ code: "CUSTOM_STRUCTURE", level: "error", message });
+    }
+    if (!geometry.perimeter || (project.mode === "template" && (!geometry.backHole || geometry.creases.length < 12)))
       issues.push({ code: "INVALID_GEOMETRY", level: "error", message: "刀板轮廓或压痕数据不完整。" });
-    for (const message of geometryIntegrityIssues(geometry))
+    if (geometry.perimeter) for (const message of geometryIntegrityIssues(geometry))
       issues.push({ code: "GEOMETRY_CONFLICT", level: "error", message });
+    if (project.mode === "template" && closedBottomGapArea(geometry) > .1)
+      issues.push({ code: "BOTTOM_GAP", level: "error", message: "锁底闭合后存在未覆盖区域，请检查折片结构。" });
   } catch (error) {
     issues.push({ code: "INVALID_GEOMETRY", level: "error", message: error instanceof Error ? error.message : "刀板生成失败。" });
   }
@@ -44,11 +52,16 @@ export function runPreflight(project: Project, availableAssetIds?: ReadonlySet<s
   else if (project.print.safeAreaMm < 3)
     issues.push({ code: "LOW_SAFE_AREA", level: "warning", message: `安全距离 ${project.print.safeAreaMm} mm，建议至少 3 mm。` });
 
-  for (const faceId of EDITABLE_FACES) {
+  const validFaces = new Set(projectFaceIds(project));
+  for (const [faceId, objects] of Object.entries(project.faces)) {
+    if (objects.length && !validFaces.has(faceId)) issues.push({ code: "ORPHAN_ARTWORK", level: "error",
+      message: `面板 ${faceId} 已不在有效刀板中，请确认图案归属。` });
+  }
+  for (const faceId of validFaces) {
     const size = faceSize(faceId, project);
-    for (const object of project.faces[faceId]) {
+    for (const object of project.faces[faceId] ?? []) {
       if (!object.visible) continue;
-      const where = `${FACE_LABELS[faceId]}「${object.name}」`;
+      const where = `${faceLabel(project, faceId)}「${object.name}」`;
       if (![object.x, object.y, object.width, object.height, object.rotation].every(Number.isFinite) || object.width <= 0 || object.height <= 0) {
         issues.push({ code: "INVALID_OBJECT", level: "error", message: `${where}的位置或尺寸无效。`, faceId, objectId: object.id });
         continue;
