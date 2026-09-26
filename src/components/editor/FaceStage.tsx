@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Image as KonvaImage, Layer, Rect, Stage, Text, Transformer } from "react-konva";
 import type Konva from "konva";
+import { ensureFontLoaded } from "@/core/fonts/loader";
+import { canvasFontFamily, getFont } from "@/core/fonts/registry";
 import { useProjectStore } from "@/core/project/store";
 import { faceSize, ptToMm, type AssetObject, type DesignObject, type EditableFaceId } from "@/core/project/types";
 
@@ -14,6 +16,7 @@ type Props = {
   interactive?: boolean;
   onAssetReady?: () => void;
   onAssetError?: (message: string) => void;
+  onFontReady?: () => void;
 };
 
 function useLoadedImage(src: string | undefined, onReady?: () => void, onError?: (message: string) => void) {
@@ -33,11 +36,24 @@ function useLoadedImage(src: string | undefined, onReady?: () => void, onError?:
   return loaded && loaded.src === src ? loaded.image : null;
 }
 
-function ArtworkObject({ object, pixelsPerMm: k, src, interactive, selected, onAssetReady, onAssetError }: {
+function ArtworkObject({ object, pixelsPerMm: k, src, interactive, selected, onAssetReady, onAssetError, onFontReady }: {
   object: DesignObject; pixelsPerMm: number; src?: string; interactive: boolean; selected: boolean;
-  onAssetReady?: () => void; onAssetError?: (message: string) => void;
+  onAssetReady?: () => void; onAssetError?: (message: string) => void; onFontReady?: () => void;
 }) {
   const image = useLoadedImage(object.type === "asset" ? src : undefined, onAssetReady, onAssetError);
+  const [fontEpoch, setFontEpoch] = useState(0);
+  const fontId = object.type === "text" ? object.fontId : "";
+  const fontText = object.type === "text" ? object.text : "";
+  const fontWeight = object.type === "text" ? object.fontWeight : 400;
+  const fontStyle = object.type === "text" ? object.fontStyle : "normal";
+  useEffect(() => {
+    if (!fontId || getFont(fontId)?.legacy) return;
+    let active = true;
+    ensureFontLoaded(fontId, fontText, fontWeight, fontStyle === "italic")
+      .then(() => { if (active) { setFontEpoch((value) => value + 1); onFontReady?.(); } })
+      .catch((error) => { if (active) onAssetError?.(error instanceof Error ? error.message : "字体加载失败。"); });
+    return () => { active = false; };
+  }, [fontId, fontText, fontWeight, fontStyle, onFontReady, onAssetError]);
   const selectObject = useProjectStore((state) => state.selectObject);
   const patchObject = useProjectStore((state) => state.patchObject);
   const beginGesture = useProjectStore((state) => state.beginGesture);
@@ -86,8 +102,9 @@ function ArtworkObject({ object, pixelsPerMm: k, src, interactive, selected, onA
     },
   };
   if (object.type === "text") {
-    return <Text {...common} text={object.text} fontFamily={object.fontFamily}
+    return <Text {...common} key={`${object.id}-${fontEpoch}`} text={object.text} fontFamily={canvasFontFamily(object.fontId, object.text)}
       fontSize={ptToMm(object.fontSizePt) * k} fontStyle={`${object.fontStyle} ${object.fontWeight}`}
+      letterSpacing={object.letterSpacingMm * k} lineHeight={object.lineHeight}
       fill={object.color} align={object.textAlign} verticalAlign="middle" wrap="word" ellipsis={false}
       shadowColor={selected ? "#1f8a6c" : undefined} shadowBlur={selected ? 1 : 0} />;
   }
@@ -95,14 +112,15 @@ function ArtworkObject({ object, pixelsPerMm: k, src, interactive, selected, onA
   return <KonvaImage {...common} image={image} />;
 }
 
-export function FaceStage({ faceId, pixelsPerMm: k, assetUrls, stageRef, interactive = false, onAssetReady, onAssetError }: Props) {
+export function FaceStage({ faceId, pixelsPerMm: k, assetUrls, stageRef, interactive = false, onAssetReady, onAssetError, onFontReady }: Props) {
   const internalRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const ref = stageRef ?? internalRef;
   const objects = useProjectStore((state) => state.project.faces[faceId]);
+  const project = useProjectStore((state) => state.project);
   const selectedId = useProjectStore((state) => state.selectedObjectId);
   const selectObject = useProjectStore((state) => state.selectObject);
-  const { width, height } = faceSize(faceId);
+  const { width, height } = faceSize(faceId, project);
   useEffect(() => {
     if (!interactive || !transformerRef.current || !ref.current) return;
     const node = selectedId ? ref.current.findOne(`#${selectedId}`) : null;
@@ -117,7 +135,7 @@ export function FaceStage({ faceId, pixelsPerMm: k, assetUrls, stageRef, interac
       {objects.map((object) => <ArtworkObject key={object.id} object={object} pixelsPerMm={k}
         src={object.type === "asset" ? assetUrls[(object as AssetObject).assetId] : undefined}
         interactive={interactive} selected={interactive && selectedId === object.id}
-        onAssetReady={onAssetReady} onAssetError={onAssetError} />)}
+        onAssetReady={onAssetReady} onAssetError={onAssetError} onFontReady={onFontReady} />)}
       {interactive && <Transformer ref={transformerRef} rotateEnabled
         flipEnabled={false} borderStroke="#1c8061" anchorStroke="#1c8061" anchorFill="#ffffff"
         anchorSize={9} boundBoxFunc={(oldBox, newBox) => newBox.width < 12 || newBox.height < 10 ? oldBox : newBox} />}

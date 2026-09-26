@@ -1,6 +1,7 @@
 "use client";
 
 import { create } from "zustand";
+import { validateDimensions, type BoxDimensions } from "../box/geometry";
 import { emptyProject, faceSize, type AssetMeta, type DesignObject, type EditableFaceId, type Project, type TextObject } from "./types";
 
 type ObjectPatch = Partial<DesignObject>;
@@ -12,6 +13,8 @@ type Store = {
   gestureStart: Project | null;
   loadProject: (project: Project) => void;
   setFace: (face: EditableFaceId) => void;
+  updateDimensions: (dimensions: BoxDimensions) => void;
+  updatePrint: (patch: Partial<Project["print"]>) => void;
   selectObject: (id: string | null) => void;
   addText: () => void;
   addAssetObject: (asset: AssetMeta, width?: number, height?: number) => void;
@@ -34,15 +37,32 @@ export const useProjectStore = create<Store>((set) => ({
   past: [], future: [], gestureStart: null,
   loadProject: (project) => set({ project, selectedObjectId: null, past: [], future: [], gestureStart: null }),
   setFace: (face) => set((state) => ({ project: { ...state.project, selectedFace: face }, selectedObjectId: null })),
+  updateDimensions: (dimensions) => set((state) => {
+    const errors = validateDimensions(dimensions);
+    if (errors.length) throw new Error(errors.join(" "));
+    if (JSON.stringify(dimensions) === JSON.stringify(state.project.dimensions)) return state;
+    return { project: { ...state.project, dimensions: { ...dimensions } },
+      past: remember(state.past, state.project), future: [], selectedObjectId: null };
+  }),
+  updatePrint: (patch) => set((state) => {
+    const next = { ...state.project.print, ...patch };
+    if (!Number.isFinite(next.bleedMm) || next.bleedMm < 0 || next.bleedMm > 10 ||
+        !Number.isFinite(next.safeAreaMm) || next.safeAreaMm < 0 || next.safeAreaMm > 20) {
+      throw new Error("出血须在 0–10 mm，安全距离须在 0–20 mm。无效设置未应用。");
+    }
+    if (JSON.stringify(next) === JSON.stringify(state.project.print)) return state;
+    return { project: { ...state.project, print: next }, past: remember(state.past, state.project), future: [] };
+  }),
   selectObject: (id) => set({ selectedObjectId: id }),
   addText: () => set((state) => {
     const faceId = state.project.selectedFace;
-    const { height } = faceSize(faceId);
+    const { height } = faceSize(faceId, state.project);
     const id = crypto.randomUUID();
     const object: TextObject = {
       id, type: "text", faceId, name: "文字", x: 13, y: Math.min(25, height / 3), width: 64, height: 15,
       rotation: 0, opacity: 1, visible: true, locked: false,
-      text: "HELLO", fontFamily: "Arial", fontSizePt: 24, fontWeight: "normal", fontStyle: "normal", color: "#173f35", textAlign: "center",
+      text: "HELLO", fontId: "inter", fontSizePt: 24, fontWeight: 400, fontStyle: "normal", color: "#173f35", textAlign: "center",
+      letterSpacingMm: 0, lineHeight: 1.2,
     };
     const project = copy(state.project);
     project.faces[faceId].push(object);
@@ -50,7 +70,7 @@ export const useProjectStore = create<Store>((set) => ({
   }),
   addAssetObject: (asset, width, height) => set((state) => {
     const faceId = state.project.selectedFace;
-    const size = faceSize(faceId);
+    const size = faceSize(faceId, state.project);
     const objectWidth = Math.min(size.width * 0.65, width ?? 42);
     const objectHeight = Math.min(size.height * 0.65, height ?? objectWidth * asset.naturalHeight / asset.naturalWidth);
     const id = crypto.randomUUID();

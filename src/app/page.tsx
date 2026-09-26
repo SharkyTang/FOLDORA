@@ -3,12 +3,12 @@ import Link from "next/link";
 export default function Home() {
   return <main className="landing">
     <div className="landing-card">
-      <span className="eyebrow">PACKAGING DESIGN PLATFORM / v0.1</span>
+      <span className="eyebrow">FOLDORA / PROFESSIONAL PACKAGING FOUNDATION / v0.2</span>
       <div className="landing-mark" aria-hidden="true">▧</div>
       <h1>从平面刀板，到立体包装。</h1>
-      <p>使用固定的 90 × 90 × 235 mm 酒盒模板，添加文字与素材，实时预览 3D 纸盒，并导出展示图片。</p>
+      <p>设置真实盒型尺寸，设计五个盒面，查看展开与折叠结构，完成印前检查并导出完整刀板 RGB 校样 PDF。</p>
       <Link className="primary-link" href="/editor">打开编辑器 <span aria-hidden="true">↗</span></Link>
-      <div className="landing-meta"><span>固定酒盒刀板</span><span>本机自动保存</span><span>PNG / JPG 展示导出</span></div>
+      <div className="landing-meta"><span>参数化插接式锁底盒</span><span>本机自动保存</span><span>完整刀板 PDF</span></div>
     </div>
   </main>;
 }

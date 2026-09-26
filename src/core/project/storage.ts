@@ -1,6 +1,7 @@
 import { openDB, type IDBPDatabase } from "idb";
 import { DIECUT } from "../box/reference";
 import { EDITABLE_FACES, emptyProject, faceSize, type EditableFaceId, type Project } from "./types";
+import { migrateProjectV2, validateProjectV2, validateProjectV3 } from "./migration";
 
 const DB_NAME = "packaging-editor-v01";
 let dbPromise: Promise<IDBPDatabase> | undefined;
@@ -108,12 +109,21 @@ async function migrateLegacy(): Promise<Project | null> {
 
 export async function loadOrCreateProject(): Promise<{ project: Project; migrated: boolean }> {
   const db = await database();
-  const saved = await db.get("projects", "current") as Project | undefined;
+  const saved = await db.get("projects", "current") as unknown;
   if (saved) {
-    if (saved.version !== 2 || saved.templateId !== DIECUT.id || !saved.faces?.front) {
-      throw new Error("本机项目版本无法读取，请备份浏览器数据后重试。");
+    if (validateProjectV3(saved)) {
+      return { project: { ...saved, assets: { ...emptyProject().assets, ...saved.assets } }, migrated: false };
     }
-    return { project: { ...saved, assets: { ...emptyProject().assets, ...saved.assets } }, migrated: false };
+    if (validateProjectV2(saved)) {
+      const project = migrateProjectV2(saved);
+      const transaction = db.transaction("projects", "readwrite");
+      const backup = await transaction.store.get("original-v2");
+      if (!backup) await transaction.store.put(saved, "original-v2");
+      await transaction.store.put(project, "current");
+      await transaction.done;
+      return { project, migrated: true };
+    }
+    throw new Error("本机项目版本无法读取；原始记录保持不变，请先备份浏览器数据。");
   }
   const migrated = await migrateLegacy();
   return { project: migrated ?? emptyProject(), migrated: Boolean(migrated) };

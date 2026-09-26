@@ -1,7 +1,9 @@
 "use client";
 
 import { useProjectStore } from "@/core/project/store";
+import { getFont } from "@/core/fonts/registry";
 import { EDITABLE_FACES, FACE_LABELS, objectLabel, type DesignObject } from "@/core/project/types";
+import { FontPicker } from "./FontPicker";
 
 function NumericField({ label, value, onChange, min, max, unit }: {
   label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; unit?: string;
@@ -27,23 +29,31 @@ export function Inspector() {
       {object.type === "text" && <div className="property-stack">
         <label className="property-field wide"><span>文字内容</span><textarea rows={3} value={object.text}
           onChange={(event) => patch(object.id, { text: event.target.value })} /></label>
-        <label className="property-field wide"><span>字体</span><select value={object.fontFamily}
-          onChange={(event) => patch(object.id, { fontFamily: event.target.value })}>
-          <option value="Arial">Arial</option><option value="Georgia">Georgia</option>
-          <option value="Times New Roman">Times New Roman</option><option value="PingFang SC">苹方</option>
-          <option value="Microsoft YaHei">微软雅黑</option>
-        </select></label>
+        <div className="property-field wide"><span>字体</span><FontPicker value={object.fontId} text={object.text}
+          onChange={(fontId) => {
+            const font = getFont(fontId);
+            patch(object.id, { fontId, fontWeight: font?.weights.includes(object.fontWeight) ? object.fontWeight : font?.weights[0] ?? 400,
+              fontStyle: font?.italic ? object.fontStyle : "normal" });
+          }} /></div>
         <NumericField label="字号" unit="pt" value={object.fontSizePt} min={6} max={200}
           onChange={(value) => patch(object.id, { fontSizePt: value })} />
         <label className="property-field"><span>颜色</span><input type="color" value={object.color}
           onChange={(event) => patch(object.id, { color: event.target.value })} /></label>
         <div className="format-row">
-          <button type="button" aria-label="粗体" aria-pressed={object.fontWeight === "bold"} title="粗体" onClick={() => patch(object.id, { fontWeight: object.fontWeight === "bold" ? "normal" : "bold" })}><b>B</b></button>
-          <button type="button" aria-label="斜体" aria-pressed={object.fontStyle === "italic"} title="斜体" onClick={() => patch(object.id, { fontStyle: object.fontStyle === "italic" ? "normal" : "italic" })}><i>I</i></button>
+          <button type="button" aria-label="粗体" aria-pressed={object.fontWeight >= 700} title="粗体"
+            disabled={!getFont(object.fontId)?.weights.includes(700)}
+            onClick={() => patch(object.id, { fontWeight: object.fontWeight >= 700 ? 400 : 700 })}><b>B</b></button>
+          <button type="button" aria-label="斜体" aria-pressed={object.fontStyle === "italic"} title="斜体"
+            disabled={!getFont(object.fontId)?.italic}
+            onClick={() => patch(object.id, { fontStyle: object.fontStyle === "italic" ? "normal" : "italic" })}><i>I</i></button>
           <select aria-label="文字对齐" value={object.textAlign} onChange={(event) => patch(object.id, { textAlign: event.target.value as "left" | "center" | "right" })}>
             <option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option>
           </select>
         </div>
+        <NumericField label="字距" unit="mm" value={object.letterSpacingMm} min={-3} max={10}
+          onChange={(value) => patch(object.id, { letterSpacingMm: value })} />
+        <NumericField label="行距" unit="倍" value={object.lineHeight} min={.7} max={3}
+          onChange={(value) => patch(object.id, { lineHeight: value })} />
       </div>}
       <div className="property-grid">
         <NumericField label="X" unit="mm" value={object.x} onChange={(value) => patch(object.id, { x: value })} />

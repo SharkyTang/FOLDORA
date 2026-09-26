@@ -1,7 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { validateDimensions, type BoxDimensions } from "@/core/box/geometry";
+import { runPreflight, type PreflightIssue } from "@/core/print/preflight";
+import { buildProofPdf, DEFAULT_EXPORT_SETTINGS, type ExportSettings } from "@/core/print/pdf";
 import { useProjectStore } from "@/core/project/store";
 import { loadAssetUrls, loadOrCreateProject, saveAssetBlob, saveProject } from "@/core/project/storage";
 import { BUILTIN_ASSETS, EDITABLE_FACES, FACE_LABELS, faceSize, type AssetMeta, type Project } from "@/core/project/types";
@@ -10,11 +13,15 @@ import { FaceStage } from "./FaceStage";
 import { Inspector, LayersPanel } from "./Inspector";
 import { NetOverview } from "./NetOverview";
 import { TextureSurfaces, type PreviewMap, type SurfaceHandle, type SurfaceMap } from "./TextureSurfaces";
+import "./fontStyles";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
-function ViewCanvas({ assetUrls, onAssetError }: { assetUrls: Record<string, string>; onAssetError: (message: string) => void }) {
+function ViewCanvas({ assetUrls, onAssetError, showBleed, showSafe }: {
+  assetUrls: Record<string, string>; onAssetError: (message: string) => void; showBleed: boolean; showSafe: boolean;
+}) {
   const face = useProjectStore((state) => state.project.selectedFace);
+  const project = useProjectStore((state) => state.project);
   const [zoom, setZoom] = useState(1);
   const [bounds, setBounds] = useState({ width: 650, height: 650 });
   const holder = useRef<HTMLDivElement>(null);
@@ -24,7 +31,7 @@ function ViewCanvas({ assetUrls, onAssetError }: { assetUrls: Record<string, str
     observer.observe(holder.current);
     return () => observer.disconnect();
   }, []);
-  const size = faceSize(face);
+  const size = faceSize(face, project);
   const fit = Math.max(1, Math.min((bounds.width - 64) / size.width, (bounds.height - 64) / size.height));
   const scale = fit * zoom;
   return <div className="canvas-workspace">
@@ -39,10 +46,44 @@ function ViewCanvas({ assetUrls, onAssetError }: { assetUrls: Record<string, str
     <div className="canvas-scroll" ref={holder} data-testid="face-canvas">
       <div className="canvas-paper" style={{ width: size.width * scale, height: size.height * scale }}>
         <FaceStage faceId={face} pixelsPerMm={scale} assetUrls={assetUrls} interactive onAssetError={onAssetError} />
+        {showBleed && <div className="face-bleed-guide" style={{ inset: -project.print.bleedMm * scale }} aria-hidden="true" />}
+        {showSafe && <div className="face-safe-guide" style={{ inset: project.print.safeAreaMm * scale }} aria-hidden="true" />}
       </div>
     </div>
     <div className="canvas-status">盒面设计区域 · 鼠标拖动对象，拖动控制点缩放或旋转</div>
   </div>;
+}
+
+function DimensionsPanel({ onError }: { onError: (message: string) => void }) {
+  const dimensions = useProjectStore((state) => state.project.dimensions);
+  const updateDimensions = useProjectStore((state) => state.updateDimensions);
+  const [draft, setDraft] = useState<BoxDimensions>(dimensions);
+  const fields: [keyof BoxDimensions, string][] = [
+    ["widthMm", "宽 W"], ["depthMm", "深 D"], ["heightMm", "高 H"], ["glueFlapMm", "糊口 Glue"],
+  ];
+  return <section><span className="eyebrow">PARAMETRIC BOX</span><h2>盒型尺寸</h2>
+    <div className="dimension-grid">{fields.map(([key, label]) => <label key={key} className="property-field">{label} · mm
+      <input type="number" min="1" step="1" value={draft[key]}
+        onChange={(event) => setDraft((previous) => ({ ...previous, [key]: Number(event.target.value) }))} /></label>)}</div>
+    <button type="button" className="panel-action" onClick={() => {
+      const errors = validateDimensions(draft);
+      if (errors.length) { onError(errors.join(" ")); return; }
+      try { updateDimensions(draft); } catch (error) { onError(error instanceof Error ? error.message : "刀板尺寸无效。"); }
+    }}>更新刀板</button>
+    <p className="small-note">更改尺寸作为一次可撤销操作。图案保留原有 mm 坐标；越界将在印前检查中提示。</p>
+  </section>;
+}
+
+function PreflightPanel({ issues, onLocate }: { issues: PreflightIssue[]; onLocate: (issue: PreflightIssue) => void }) {
+  const errors = issues.filter((issue) => issue.level === "error").length;
+  return <section className="preflight-section"><span className="eyebrow">PREFLIGHT</span><h2>印前检查</h2>
+    <p className="preflight-summary" role="status">{errors ? `${errors} 项阻止 PDF 导出` : "可导出 RGB 校样 PDF"} · {issues.length} 项提示</p>
+    {issues.length ? <div className="preflight-list">{issues.map((issue, index) => <button type="button"
+      key={`${issue.code}-${issue.objectId ?? index}`} className={`preflight-issue ${issue.level}`} onClick={() => onLocate(issue)}
+      title={issue.faceId ? `定位到${FACE_LABELS[issue.faceId]}` : issue.message}>
+      <strong>{issue.level === "error" ? "阻止" : issue.level === "strong-warning" ? "强警告" : "提醒"}</strong><span>{issue.message}</span>
+    </button>)}</div> : <p className="small-note">当前未发现尺寸、素材、字体或 DPI 问题。</p>}
+  </section>;
 }
 
 export default function EditorWorkspace() {
@@ -56,6 +97,8 @@ export default function EditorWorkspace() {
   const redo = useProjectStore((state) => state.redo);
   const removeObject = useProjectStore((state) => state.removeObject);
   const clear = useProjectStore((state) => state.clear);
+  const updatePrint = useProjectStore((state) => state.updatePrint);
+  const selectObject = useProjectStore((state) => state.selectObject);
   const past = useProjectStore((state) => state.past);
   const future = useProjectStore((state) => state.future);
   const [hydrated, setHydrated] = useState(false);
@@ -66,6 +109,10 @@ export default function EditorWorkspace() {
   const [saveStatus, setSaveStatus] = useState("正在读取本机项目…");
   const [savedProject, setSavedProject] = useState<Project | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [showBleed, setShowBleed] = useState(false);
+  const [showSafe, setShowSafe] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS);
+  const [exporting, setExporting] = useState(false);
   const surfaceRef = useRef<SurfaceHandle>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const generatedUrls = useRef<string[]>([]);
@@ -159,16 +206,37 @@ export default function EditorWorkspace() {
     } catch (error) { notify(error instanceof Error ? error.message : "导出失败，请重试。"); }
   };
 
+  const issues = useMemo(() => runPreflight(project, hydrated ? new Set(Object.keys(assetUrls)) : undefined), [project, assetUrls, hydrated]);
+  const exportPdf = async () => {
+    if (exporting || !hydrated) return;
+    setExporting(true);
+    try {
+      const renderFace = surfaceRef.current?.renderPrintFace;
+      if (!renderFace) throw new Error("刀板画布尚未准备好，请稍后重试。");
+      const bytes = await buildProofPdf(project, exportSettings, renderFace, new Set(Object.keys(assetUrls)));
+      const blob = new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `FOLDORA-${project.dimensions.widthMm}x${project.dimensions.depthMm}x${project.dimensions.heightMm}-RGB校样.pdf`;
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      notify("完整刀板 RGB 校样 PDF 已导出。");
+    } catch (error) { notify(error instanceof Error ? error.message : "PDF 导出失败。"); }
+    finally { setExporting(false); }
+  };
+
   const onSurfaces = useCallback((next: SurfaceMap, thumbs: PreviewMap) => { setSurfaces(next); setPreviews(thumbs); }, []);
   return <div className="editor-shell">
     <header className="editor-header">
-      <div className="header-brand"><Link href="/" className="brand-symbol" title="返回首页">▧</Link><div><strong>包装设计平台</strong><small>固定酒盒模板 · v0.1</small></div></div>
-      <div className="header-center"><span className="document-name">未命名包装设计</span><span className="template-chip">90 × 90 × 235 mm</span></div>
+      <div className="header-brand"><Link href="/" className="brand-symbol" title="返回首页">▧</Link><div><strong>FOLDORA 包装设计</strong><small>专业包装基础版 · v0.2</small></div></div>
+      <div className="header-center"><span className="document-name">未命名包装设计</span><span className="template-chip">{project.dimensions.widthMm} × {project.dimensions.depthMm} × {project.dimensions.heightMm} mm</span></div>
       <div className="header-actions"><span className="save-status" role="status">{hydrated && savedProject !== project && saveStatus !== "保存失败" ? "正在保存到本机…" : saveStatus}</span>
         <button type="button" title="撤销 Cmd/Ctrl+Z" disabled={!past.length} onClick={undo}>↶</button>
         <button type="button" title="重做 Cmd/Ctrl+Shift+Z" disabled={!future.length} onClick={redo}>↷</button>
         <button type="button" className="export-button" title="导出当前盒面的 PNG 展示图" onClick={() => exportFace("png")}>导出 PNG</button>
         <button type="button" className="export-secondary" title="导出当前盒面的 JPG 展示图" onClick={() => exportFace("jpeg")}>JPG</button>
+        <button type="button" className="export-button" title="导出完整刀板 RGB 校样 PDF" disabled={exporting || !hydrated} onClick={() => void exportPdf()}>{exporting ? "正在导出…" : "导出刀板 PDF"}</button>
       </div>
     </header>
     <div className="editor-grid">
@@ -186,7 +254,26 @@ export default function EditorWorkspace() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={asset.path} alt="" /><span>{asset.name}</span></button>)}</div>
         </section>
-        <section><span className="eyebrow">DIELINE</span><h2>固定刀板</h2><NetOverview previews={previews} />
+        <DimensionsPanel key={JSON.stringify(project.dimensions)} onError={notify} />
+        <section><span className="eyebrow">PRINT GUIDES</span><h2>印刷辅助线</h2>
+          <div className="dimension-grid"><label className="property-field">出血 · mm<input type="number" min="0" max="10" step=".5"
+            value={project.print.bleedMm} onChange={(event) => { try { updatePrint({ bleedMm: Number(event.target.value) }); } catch (error) { notify(String(error)); } }} /></label>
+            <label className="property-field">安全距离 · mm<input type="number" min="0" max="20" step=".5"
+              value={project.print.safeAreaMm} onChange={(event) => { try { updatePrint({ safeAreaMm: Number(event.target.value) }); } catch (error) { notify(String(error)); } }} /></label></div>
+          <div className="guide-switches"><label><input type="checkbox" checked={showBleed} onChange={(event) => setShowBleed(event.target.checked)} /> 显示 BLEED</label>
+            <label><input type="checkbox" checked={showSafe} onChange={(event) => setShowSafe(event.target.checked)} /> 显示 SAFE</label></div>
+          <p className="small-note">刀线与压痕始终显示；辅助线开关只影响编辑视图。</p>
+        </section>
+        <section><span className="eyebrow">EXPORT</span><h2>RGB 校样 PDF</h2>
+          <label className="property-field">渲染分辨率<select value={exportSettings.dpi} onChange={(event) =>
+            setExportSettings((previous) => ({ ...previous, dpi: Number(event.target.value) as 150 | 300 }))}>
+            <option value="300">300 DPI · 默认</option><option value="150">150 DPI · 草稿</option></select></label>
+          <div className="guide-switches">{(["includeBleed", "includeCut", "includeCrease"] as const).map((key) => <label key={key}>
+            <input type="checkbox" checked={exportSettings[key]} onChange={(event) => setExportSettings((previous) => ({ ...previous, [key]: event.target.checked }))} />
+            {key === "includeBleed" ? "出血" : key === "includeCut" ? "CUT" : "CREASE"}</label>)}</div>
+          <p className="small-note">完整刀板按实际毫米尺寸导出；这是 RGB 校样，非 PDF/X 印厂认证文件。</p>
+        </section>
+        <section><span className="eyebrow">DIELINE</span><h2>刀板总览</h2><NetOverview previews={previews} showBleed={showBleed} showSafe={showSafe} />
           <div className="face-picker">{EDITABLE_FACES.map((face) => <button type="button" key={face}
             className={project.selectedFace === face ? "active" : ""} onClick={() => setFace(face)} title={`编辑${FACE_LABELS[face]}`}>
             {FACE_LABELS[face]}<small>{project.faces[face].length}</small></button>)}</div>
@@ -202,14 +289,16 @@ export default function EditorWorkspace() {
           </div>
         </div>
         <div className="workspace-body">{activeView === "two"
-          ? <ViewCanvas assetUrls={assetUrls} onAssetError={notify} />
+          ? <ViewCanvas assetUrls={assetUrls} onAssetError={notify} showBleed={showBleed} showSafe={showSafe} />
           : <BoxPreview surfaces={surfaces} onSelectFace={setFace} onError={notify} />}</div>
-        <div className="workspace-footer"><span>固定盒型 · 90 × 90 × 235 mm · 糊口 15 mm</span><span>PNG/JPG 仅作展示，非印刷文件</span></div>
+        <div className="workspace-footer"><span>插接式锁底盒 · {project.dimensions.widthMm} × {project.dimensions.depthMm} × {project.dimensions.heightMm} mm · 糊口 {project.dimensions.glueFlapMm} mm</span><span>PNG/JPG 展示图 · PDF RGB 校样</span></div>
       </main>
-      <aside className="right-sidebar" aria-label="属性和图层"><Inspector /><LayersPanel /></aside>
+      <aside className="right-sidebar" aria-label="属性、图层和印前检查"><Inspector /><LayersPanel />
+        <PreflightPanel issues={issues} onLocate={(issue) => { if (issue.faceId) { setFace(issue.faceId); selectObject(issue.objectId ?? null); setActiveView("two"); } }} />
+      </aside>
     </div>
     <TextureSurfaces ref={surfaceRef} assetUrls={assetUrls} onSurfaces={onSurfaces} onAssetError={notify} />
     {toast && <div className="toast" role="alert"><span>{toast}</span><button type="button" onClick={() => setToast(null)} aria-label="关闭提示">×</button></div>}
-    <div className="mobile-notice">v0.1 编辑器为桌面设计。请使用宽度至少 1000 px 的电脑浏览器编辑；当前仍可查看固定刀板。</div>
+    <div className="mobile-notice">v0.2 编辑器为桌面设计。请使用宽度至少 1000 px 的电脑浏览器编辑。</div>
   </div>;
 }
