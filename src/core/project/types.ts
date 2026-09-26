@@ -1,0 +1,83 @@
+export const EDITABLE_FACES = ["front", "back", "left", "right", "top"] as const;
+export type EditableFaceId = (typeof EDITABLE_FACES)[number];
+export type FaceId = EditableFaceId | "bottom";
+
+export const FACE_LABELS: Record<FaceId, string> = {
+  front: "正面", back: "背面", left: "左侧", right: "右侧", top: "顶面", bottom: "底面",
+};
+
+export type BaseObject = {
+  id: string;
+  faceId: EditableFaceId;
+  name: string;
+  x: number; y: number; width: number; height: number;
+  rotation: number;
+  opacity: number;
+  visible: boolean;
+  locked: boolean;
+};
+
+export type TextObject = BaseObject & {
+  type: "text";
+  text: string;
+  fontFamily: string;
+  fontSizePt: number;
+  fontWeight: "normal" | "bold";
+  fontStyle: "normal" | "italic";
+  color: string;
+  textAlign: "left" | "center" | "right";
+};
+
+export type AssetObject = BaseObject & {
+  type: "asset";
+  assetId: string;
+};
+
+export type DesignObject = TextObject | AssetObject;
+
+export type AssetMeta = {
+  id: string;
+  name: string;
+  mime: "image/png" | "image/jpeg" | "image/svg+xml";
+  source: "builtin" | "upload";
+  path?: string;
+  naturalWidth: number;
+  naturalHeight: number;
+};
+
+export type Project = {
+  version: 2;
+  templateId: "snap-lock-90x90x235";
+  selectedFace: EditableFaceId;
+  faces: Record<FaceId, DesignObject[]>;
+  assets: Record<string, AssetMeta>;
+};
+
+export const BUILTIN_ASSETS: Record<string, AssetMeta> = {
+  badge: { id: "badge", name: "纪念徽章", mime: "image/svg+xml", source: "builtin", path: "/assets/badge.svg", naturalWidth: 240, naturalHeight: 240 },
+  frame: { id: "frame", name: "装饰边框", mime: "image/svg+xml", source: "builtin", path: "/assets/frame.svg", naturalWidth: 300, naturalHeight: 440 },
+  leaf: { id: "leaf", name: "植物纹样", mime: "image/svg+xml", source: "builtin", path: "/assets/leaf.svg", naturalWidth: 230, naturalHeight: 330 },
+  monogram: { id: "monogram", name: "字母标记", mime: "image/svg+xml", source: "builtin", path: "/assets/monogram.svg", naturalWidth: 240, naturalHeight: 240 },
+};
+
+export function emptyProject(): Project {
+  return {
+    version: 2,
+    templateId: "snap-lock-90x90x235",
+    selectedFace: "front",
+    faces: { front: [], back: [], left: [], right: [], top: [], bottom: [] },
+    assets: { ...BUILTIN_ASSETS },
+  };
+}
+
+export function faceSize(face: FaceId): { width: number; height: number } {
+  return face === "top" || face === "bottom" ? { width: 90, height: 90 } : { width: 90, height: 235 };
+}
+
+export function mmToCanvasPx(mm: number, pixelsPerMm: number): number { return mm * pixelsPerMm; }
+export function canvasPxToMm(px: number, pixelsPerMm: number): number { return px / pixelsPerMm; }
+export function ptToMm(pt: number): number { return pt * 25.4 / 72; }
+
+export function objectLabel(object: DesignObject): string {
+  return object.type === "text" ? object.text.trim().slice(0, 24) || "空白文字" : object.name;
+}
