@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#172b2b" />
+    <meta name="description" content="按指定刀板图预览 90 × 90 × 235 mm 纸盒的展开图、折叠过程与合盒效果。" />
+    <title>刀板图 2D／3D 预览</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='13' fill='%23172b2b'/%3E%3Cpath d='M14 19h23l13 8v24H27l-13-8zM37 19v24m13-16-13 16m-23 0 23 0' fill='none' stroke='%23eacb85' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">▧</span>
+          <div>
+            <strong>刀板图预览</strong>
+            <small>插接式锁底盒 · 90 × 90 × 235 mm</small>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="save-status" class="save-status" role="status" aria-live="polite">正在读取本机设计…</span>
+          <button id="export-svg" class="button button-primary" type="button">导出 SVG</button>
+          <a id="download-link" class="button button-secondary download-link" href="#" download hidden>保存文件</a>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="editor-panel" aria-label="面板图片设置">
+          <div class="panel-heading">
+            <span class="eyebrow">面板贴图</span>
+            <h1>为每一面单独排版</h1>
+            <p>选择面板上传图片，展开图与纸盒会同步更新。</p>
+          </div>
+
+          <div id="face-selector" class="face-selector" role="group" aria-label="选择要编辑的面">
+            <button class="face-tab is-selected" type="button" data-face="front" aria-pressed="true"><span>正面</span><i aria-hidden="true"></i></button>
+            <button class="face-tab" type="button" data-face="back" aria-pressed="false"><span>背面</span><i aria-hidden="true"></i></button>
+            <button class="face-tab" type="button" data-face="left" aria-pressed="false"><span>左侧</span><i aria-hidden="true"></i></button>
+            <button class="face-tab" type="button" data-face="right" aria-pressed="false"><span>右侧</span><i aria-hidden="true"></i></button>
+            <button class="face-tab" type="button" data-face="top" aria-pressed="false"><span>顶面</span><i aria-hidden="true"></i></button>
+          </div>
+
+          <section class="face-editor" aria-labelledby="selected-face-title">
+            <div class="section-title-row">
+              <div>
+                <span class="eyebrow">当前面板</span>
+                <h2 id="selected-face-title">正面</h2>
+              </div>
+              <span id="face-dimensions" class="dimension-pill">90 × 235 mm</span>
+            </div>
+            <div id="image-preview" class="image-preview"><span>尚未上传图片</span></div>
+            <div class="upload-row">
+              <label class="button button-secondary upload-button" for="image-upload">上传／更换图片</label>
+              <input id="image-upload" type="file" accept="image/png,image/jpeg,image/webp" />
+              <button id="remove-image" class="button button-quiet" type="button" disabled>移除</button>
+            </div>
+            <p id="file-name" class="file-name">支持 PNG、JPG、WebP；只放在当前面。</p>
+
+            <div class="control-group">
+              <label for="fit-mode">显示方式</label>
+              <select id="fit-mode">
+                <option value="cover">铺满（可裁切）</option>
+                <option value="contain">完整显示</option>
+              </select>
+            </div>
+            <div class="control-group range-group">
+              <label for="opacity"><span>图片透明度</span><output id="opacity-value">100%</output></label>
+              <input id="opacity" type="range" min="0" max="100" value="100" />
+            </div>
+            <div class="control-group range-group">
+              <label for="scale"><span>缩放</span><output id="scale-value">100%</output></label>
+              <input id="scale" type="range" min="50" max="250" value="100" />
+            </div>
+            <div class="control-pair">
+              <div class="control-group range-group">
+                <label for="offset-x"><span>水平位置</span><output id="offset-x-value">0%</output></label>
+                <input id="offset-x" type="range" min="-100" max="100" value="0" />
+              </div>
+              <div class="control-group range-group">
+                <label for="offset-y"><span>垂直位置</span><output id="offset-y-value">0%</output></label>
+                <input id="offset-y" type="range" min="-100" max="100" value="0" />
+              </div>
+            </div>
+            <div class="control-group range-group">
+              <label for="rotation"><span>旋转</span><output id="rotation-value">0°</output></label>
+              <input id="rotation" type="range" min="-180" max="180" value="0" />
+            </div>
+            <button id="reset-adjustment" class="text-button" type="button">重置当前面的位置与显示设置</button>
+          </section>
+
+          <div class="editor-foot">
+            <button id="clear-design" class="text-button danger" type="button">清空本机设计</button>
+            <p>SVG 为设计预览文件；未标注的局部尺寸按参考图描绘。</p>
+          </div>
+        </aside>
+
+        <section class="workspace" aria-label="刀板图与纸盒预览">
+          <div class="mobile-view-switch" role="group" aria-label="切换预览">
+            <button type="button" data-view="three" class="is-active" aria-pressed="true">3D 合盒</button>
+            <button type="button" data-view="two" aria-pressed="false">2D 刀板</button>
+          </div>
+
+          <section class="preview-card net-card" aria-labelledby="net-heading">
+            <div class="preview-heading">
+              <div><span class="eyebrow">SVG / DIELINE</span><h2 id="net-heading">2D 刀板展开图</h2></div>
+              <span class="preview-badge">按标注尺寸比例</span>
+            </div>
+            <div class="net-canvas">
+              <svg id="net-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="按参考图绘制的四面盒身、顶盖、盖舌、糊口和锁底展开图"></svg>
+            </div>
+            <div class="preview-foot"><span><b class="line-sample cut"></b>刀切线</span><span><b class="line-sample crease"></b>折线</span><span>点击面板可切换贴图</span></div>
+          </section>
+
+          <section class="preview-card box-card" aria-labelledby="box-heading">
+            <div class="preview-heading">
+              <div><span class="eyebrow">CSS 3D / FOLD</span><h2 id="box-heading">3D 纸盒预览</h2></div>
+              <button id="reset-view" class="icon-button" type="button" title="复位视角" aria-label="复位视角">↺</button>
+            </div>
+            <div id="stage" class="stage" aria-label="可拖动旋转的纸盒">
+              <div class="stage-hint">拖动旋转视角</div>
+              <div id="camera" class="camera">
+                <div id="model" class="model">
+                  <div class="wall wall-back" data-texture-face="back"><div class="texture"></div></div>
+
+                  <div id="left-hinge" class="hinge side-hinge left-hinge">
+                    <div class="wall wall-left" data-texture-face="left"><div class="texture"></div></div>
+                    <div id="glue-hinge" class="hinge glue-hinge"><svg viewBox="0 0 15 235" preserveAspectRatio="none" aria-hidden="true"><path data-flap="glue"></path></svg></div>
+                    <div id="left-dust" class="hinge top-hinge dust-hinge"><svg viewBox="0 0 90 31" preserveAspectRatio="none" aria-hidden="true"><path data-flap="dust"></path></svg></div>
+                    <div id="left-bottom" class="hinge bottom-hinge bottom-left"><svg viewBox="0 0 90 47" preserveAspectRatio="none" aria-hidden="true"><path data-flap="bottomLeft"></path></svg></div>
+                  </div>
+
+                  <div id="right-hinge" class="hinge side-hinge right-hinge">
+                    <div class="wall wall-right" data-texture-face="right"><div class="texture"></div></div>
+                    <div id="right-dust" class="hinge top-hinge dust-hinge"><svg viewBox="0 0 90 31" preserveAspectRatio="none" aria-hidden="true"><path data-flap="dust"></path></svg></div>
+                    <div id="right-bottom" class="hinge bottom-hinge bottom-right"><svg viewBox="0 0 90 47" preserveAspectRatio="none" aria-hidden="true"><path data-flap="bottomRight"></path></svg></div>
+                    <div id="front-hinge" class="hinge side-hinge front-hinge">
+                      <div class="wall wall-front" data-texture-face="front"><div class="texture"></div></div>
+                      <div id="front-bottom" class="hinge bottom-hinge bottom-front"><svg viewBox="0 0 90 47" preserveAspectRatio="none" aria-hidden="true"><path data-flap="bottomFront"></path></svg></div>
+                      <div id="top-hinge" class="hinge top-hinge closure-hinge">
+                        <div class="top-panel" data-texture-face="top"><div class="texture"></div></div>
+                        <div id="tuck-hinge" class="hinge tuck-hinge"><svg viewBox="0 0 90 34" preserveAspectRatio="none" aria-hidden="true"><path data-flap="tuck"></path></svg></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="back-bottom" class="hinge bottom-hinge bottom-back"><svg viewBox="0 0 90 47" preserveAspectRatio="none" aria-hidden="true"><path data-flap="bottomBack"></path></svg></div>
+                  <div id="back-segment-1" class="hinge top-hinge back-segment segment-1">
+                    <div class="paper-segment"></div>
+                    <div id="back-segment-2" class="hinge top-hinge back-segment segment-2">
+                      <svg viewBox="0 0 90 67" preserveAspectRatio="none" aria-hidden="true"><path d="M0 0 H90 V67 H0 Z M59 36 A14 14 0 1 0 31 36 A14 14 0 1 0 59 36 Z" fill-rule="evenodd"></path></svg>
+                      <div id="back-segment-3" class="hinge top-hinge back-segment segment-3"><div class="paper-segment"></div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="fold-controls">
+              <div class="fold-topline"><label for="fold-progress">折叠进度</label><output id="fold-value">100%</output></div>
+              <input id="fold-progress" type="range" min="0" max="100" value="100" />
+              <div class="preset-row" role="group" aria-label="折叠状态">
+                <button type="button" data-fold="0">展开</button>
+                <button type="button" data-fold="50">半折</button>
+                <button type="button" data-fold="100" class="is-active">合盒</button>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
